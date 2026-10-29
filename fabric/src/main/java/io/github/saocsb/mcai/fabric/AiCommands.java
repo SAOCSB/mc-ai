@@ -22,12 +22,13 @@ import java.util.List;
  * /ai                                           help
  * /ai &lt;message...&gt;                             talk to the AI
  * /ai help | stop | undo | clear | confirm | status
- * /ai reload                                     (admin)
- * /ai config provider|model|key|baseurl &lt;value&gt;  (admin)
+ * /ai reload | config model &lt;value&gt;             (admin: permissions.adminLevel)
+ * /ai config provider|key|baseurl &lt;value&gt;        (level 4: server owner or console)
  * </pre>
  *
- * Every literal also accepts a trailing greedy argument; when present, the whole line is sent to the AI instead,
- * so "/ai help me build a house" is a request rather than a syntax error.
+ * Every player literal also accepts a trailing greedy argument; when present, the whole line is sent to the AI
+ * instead, so "/ai help me build a house" is a request rather than a syntax error. {@code /ai config} is the
+ * exception: anything it does not know gets a usage message and never reaches the AI.
  */
 public final class AiCommands {
 	private static final int OK = 1;
@@ -64,7 +65,9 @@ public final class AiCommands {
 	private static LiteralArgumentBuilder<CommandSourceStack> config() {
 		return Commands.literal("config")
 				.requires(AiCommands::isAdmin)
+				.executes(source(AiService::configUsage))
 				.then(Commands.literal("provider")
+						.requires(AiService::isOwner)
 						.then(Commands.argument("id", StringArgumentType.word())
 								.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(providerIds(), builder))
 								.executes(ctx -> withSource(ctx, (service, source) ->
@@ -74,14 +77,18 @@ public final class AiCommands {
 								.executes(ctx -> withSource(ctx, (service, source) ->
 										service.setModel(source, StringArgumentType.getString(ctx, "value"))))))
 				.then(Commands.literal("key")
+						.requires(AiService::isOwner)
 						.then(Commands.argument("value", StringArgumentType.greedyString())
 								.executes(ctx -> withSource(ctx, (service, source) ->
 										service.setKey(source, StringArgumentType.getString(ctx, "value"))))))
 				.then(Commands.literal("baseurl")
+						.requires(AiService::isOwner)
 						.then(Commands.argument("value", StringArgumentType.greedyString())
 								.executes(ctx -> withSource(ctx, (service, source) ->
 										service.setBaseUrl(source, StringArgumentType.getString(ctx, "value"))))))
-				.then(rest("config"));
+				// Unknown subcommands get the usage; they must never be sent to the AI as a chat message.
+				.then(Commands.argument("rest", StringArgumentType.greedyString())
+						.executes(source(AiService::configUsage)));
 	}
 
 	/** A literal that runs {@code action}, or sends "{@code name} rest..." to the AI when followed by more text. */

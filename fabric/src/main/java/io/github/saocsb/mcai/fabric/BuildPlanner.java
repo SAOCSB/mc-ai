@@ -55,9 +55,21 @@ public final class BuildPlanner {
 		return new PlayerPose(pos.getX(), pos.getY(), pos.getZ(), Facing.fromYaw(player.getYRot()), GameContexts.groundY(player));
 	}
 
-	/** Terrain surface lookup: first free block above the highest non-air block. */
-	public static PlacementPlanner.SurfaceHeight surface(ServerLevel level) {
-		return (x, z) -> level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+	/**
+	 * Terrain surface lookup: the first free block above the highest motion-blocking block or fluid, ignoring leaves
+	 * (so trees and plants don't lift a build). Columns in unloaded or empty chunks report the world bottom; those
+	 * give {@code fallbackY} instead.
+	 */
+	public static PlacementPlanner.SurfaceHeight surface(ServerLevel level, int fallbackY) {
+		return (x, z) -> {
+			int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+			return y <= level.getMinY() ? fallbackY : y;
+		};
+	}
+
+	/** The bounds of a blueprint, or a single block at the local origin for an empty (or missing) one. */
+	public static Bounds bounds(Blueprint blueprint) {
+		return blueprint == null || blueprint.isEmpty() ? new Bounds(0, 0, 0, 0, 0, 0) : blueprint.bounds();
 	}
 
 	/**
@@ -68,8 +80,22 @@ public final class BuildPlanner {
 	 */
 	public static Transform transform(PlacementSpec spec, Blueprint blueprint, PlayerPose pose, Transform previous,
 			ServerLevel level) {
-		Bounds bounds = blueprint == null || blueprint.isEmpty() ? new Bounds(0, 0, 0, 0, 0, 0) : blueprint.bounds();
-		return PlacementPlanner.plan(spec == null ? PlacementSpec.defaults() : spec, bounds, pose, previous, surface(level));
+		return PlacementPlanner.plan(spec == null ? PlacementSpec.defaults() : spec, bounds(blueprint), pose, previous,
+				surface(level, pose.groundY()));
+	}
+
+	/**
+	 * Horizontal distance in blocks (rounded up) from world column ({@code x}, {@code z}) to the nearest column of
+	 * {@code bounds} placed with {@code transform}; 0 when the column is inside the footprint.
+	 */
+	public static int horizontalDistance(Bounds bounds, Transform transform, int x, int z) {
+		int ax = transform.worldX(bounds.minX(), bounds.minZ());
+		int az = transform.worldZ(bounds.minX(), bounds.minZ());
+		int bx = transform.worldX(bounds.maxX(), bounds.maxZ());
+		int bz = transform.worldZ(bounds.maxX(), bounds.maxZ());
+		long dx = Math.max(0, Math.max(Math.min(ax, bx) - (long) x, x - (long) Math.max(ax, bx)));
+		long dz = Math.max(0, Math.max(Math.min(az, bz) - (long) z, z - (long) Math.max(az, bz)));
+		return (int) Math.min(Integer.MAX_VALUE, (long) Math.ceil(Math.sqrt((double) dx * dx + (double) dz * dz)));
 	}
 
 	/** Minecraft's rotation with the same name. */
@@ -84,7 +110,11 @@ public final class BuildPlanner {
 	 * plants, liquids...) by y ascending; insertion order is kept within a layer.
 	 *
 	 * <p>Fix-ups for common script mistakes: leaves are made persistent (so they never decay), and a lower door /
-	 * tall-plant half or a bed foot whose other half the script left out gets that half added.
+	 * tall-plant half or a bed foot whose other half the script left out (nothing or air at that position, e.g.
+	 * after {@code clear()}) gets that half added.
+	 *
+	 * <p>Ids the validator refuses (denied blocks) are skipped like unknown ids; block-entity data the validator
+	 * does not allow was already removed from its results.
 	 *
 	 * @param owner the requesting player, or null
 	 */
@@ -235,9 +265,20 @@ public final class BuildPlanner {
 			int cx = kind == BED_HEAD ? x + companionDx[paletteIndex] : x;
 			int cy = kind == UPPER_HALF ? y + 1 : y;
 			int cz = kind == BED_HEAD ? z + companionDz[paletteIndex] : z;
-			if (blueprint.get(cx, cy, cz) == null) {
+			if (isFree(blueprint.get(cx, cy, cz))) {
+				// An air entry at that position sorts first (air is placed before everything else), so the
+				// companion written afterwards wins.
 				add(cx, cy, cz, paletteSize + paletteIndex);
 			}
+		}
+
+		/** True when the script put nothing or air at a companion position. */
+		private boolean isFree(String blockId) {
+			if (blockId == null) {
+				return true;
+			}
+			Integer other = index.get(blockId);
+			return other != null && category[other] == AIR;
 		}
 
 		private boolean add(int x, int y, int z, int paletteIndex) {

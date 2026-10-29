@@ -145,6 +145,27 @@ public final class BuildManager {
 		return removed;
 	}
 
+	/**
+	 * Removes the BUILD job with {@code id}, if it is queued or running. A build that had started is reported through
+	 * {@link Listener#finished} with {@code cancelled = true}, so its partial record reaches the undo history.
+	 *
+	 * @return whether such a job was found
+	 */
+	public boolean cancelBuild(long id) {
+		Iterator<BuildJob> it = queue.iterator();
+		while (it.hasNext()) {
+			BuildJob job = it.next();
+			if (job.kind() == BuildJob.Kind.BUILD && job.id() == id) {
+				it.remove();
+				if (job.hasStarted()) {
+					notifyFinished(job, true);
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** Drops all jobs without notifications (server shutdown). */
 	public void clear() {
 		queue.clear();
