@@ -59,10 +59,10 @@ Placement (`placement({...})`, default `front`):
 | `torus(cx,cy,cz,R,r,id)` | Horizontal ring |
 | `polygon([[x,z],...],y,h,id,hollow=false)` | Vertical prism from a footprint |
 | `text(str,x,y,z,id,scale=1)` | 5x7 pixel letters, readable from the front |
-| `replace(x1,y1,z1,x2,y2,z2,from,to)`, `get(x,y,z)` | Edit/read the blueprint built so far |
+| `replace(x1,y1,z1,x2,y2,z2,from,to)`, `get(x,y,z)` | Edit/read the blueprint built so far. `get` returns short ids such as `oak_stairs[facing=north]` or `air`, or `null` |
 | `random()`, `randInt(a,b)`, `pick(arr)`, `noise(x,y[,z])` | Deterministic randomness and noise |
 | `setName(str)` | Name shown in progress messages |
-| `summon(id,x,y,z,nbt?)`, `give(item,count)`, `time(v)`, `weather(v)`, `effect(id,sec,amp)`, `command(str)` | World actions, run after building |
+| `summon(id,x,y,z,nbt?)`, `give(item,count)`, `time(v)`, `weather(v)`, `effect(id,sec,amp)`, `command(str)`, `wait(sec)` | World actions, run in order after building; `wait` delays the actions after it |
 | `log(...)`, `print(...)`, `console.log(...)` | Debug output (shown to the model if the script fails) |
 
 Block ids accept states and NBT like `/setblock`: `oak_stairs[facing=north,half=top]`, `chest[facing=south]{Items:[...]}`.
