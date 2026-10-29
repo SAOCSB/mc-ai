@@ -33,12 +33,27 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 
 ```
 /ai config provider qwen          切换服务商（输入时按 Tab 有补全）
-/ai config model qwen3-max        换模型
+/ai config model qwen3.8-max      换模型
 /ai config baseurl <url>          自定义接口地址（比如中转服务）
 /ai reload                        修改配置文件后重新加载
 ```
 
-内置服务商：`deepseek`（默认）、`qwen`、`qwen_intl`、`moonshot`、`zhipu`、`siliconflow`、`volcengine`、`openai`、`anthropic`、`gemini`、`openrouter`、`ollama`、`lmstudio`、`custom`。
+内置服务商及默认模型（随时可以改）：
+
+| 服务商 id | 服务 | 默认模型 |
+|---|---|---|
+| `deepseek`（默认） | DeepSeek | `deepseek-v4-pro` |
+| `qwen` / `qwen_intl` | 阿里云百炼·通义千问（国内 / 国际） | `qwen3.8-max` |
+| `moonshot` / `moonshot_intl` | 月之暗面 Kimi（国内 / 国际） | `kimi-k3` |
+| `zhipu` / `zai` | 智谱 GLM（国内 / 国际） | `glm-5.3` |
+| `siliconflow` | 硅基流动 | `deepseek-ai/DeepSeek-V4-Flash` |
+| `volcengine` | 火山方舟·豆包 | `doubao-seed-2-1-pro-260628` |
+| `openai` | OpenAI | `gpt-6.1-sol` |
+| `anthropic` | Anthropic Claude | `claude-opus-5-5` |
+| `gemini` | Google Gemini | `gemini-pro-latest` |
+| `openrouter` | OpenRouter | `anthropic/claude-opus-5.5` |
+| `ollama` / `lmstudio` | 本地模型 | 填你自己加载的模型 |
+| `custom` | 任意 OpenAI 兼容接口 | 自己填 |
 
 > 建议选代码能力强的模型，建出来的东西会明显更好。
 
