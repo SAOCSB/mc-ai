@@ -1,7 +1,7 @@
 package io.github.saocsb.mcai.core.agent;
 
 import io.github.saocsb.mcai.core.llm.LlmClient;
-import io.github.saocsb.mcai.core.script.ScriptEngine;
+import io.github.saocsb.mcai.core.script.ScriptRunner;
 
 import java.util.concurrent.Executor;
 
@@ -26,7 +26,7 @@ import java.util.concurrent.Executor;
  * (unwrapped from CompletionException); nothing is added to the conversation then.
  */
 public final class AiAgent {
-	public AiAgent(LlmClient client, ScriptEngine engine, Executor scriptExecutor) {
+	public AiAgent(LlmClient client, ScriptRunner scripts, Executor scriptExecutor) {
 		throw new UnsupportedOperationException("TODO");
 	}
 

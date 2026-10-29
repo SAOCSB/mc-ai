@@ -16,7 +16,7 @@ package io.github.saocsb.mcai.core.script;
  *
  * <p>Thread-safe: every {@link #run} uses its own Context and scope.
  */
-public final class ScriptEngine {
+public final class ScriptEngine implements ScriptRunner {
 	/** Every global function the script API defines (used by tests to keep the prompt in sync). */
 	public static final java.util.List<String> API_FUNCTIONS = java.util.List.of(
 			"block", "fill", "hollow", "walls", "frame", "clear", "line", "sphere", "dome", "ellipsoid",
@@ -37,6 +37,7 @@ public final class ScriptEngine {
 	 * @param seed   seed for random()/randInt()/pick()/noise()/Math.random
 	 * @throws ScriptException on syntax/runtime errors, timeouts, limit violations or cancellation
 	 */
+	@Override
 	public ScriptResult run(String source, ScriptLimits limits, long seed) throws ScriptException {
 		throw new UnsupportedOperationException("TODO");
 	}
