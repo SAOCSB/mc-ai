@@ -27,8 +27,47 @@ public record GameContext(String playerName, String dimension, String biome, int
 	 * [/game context]
 	 * </pre>
 	 * (time label: dawn/morning/noon/afternoon/sunset/night/midnight; "other players" line omitted when none.)
+	 * Lines are separated by {@code \n}; there is no trailing newline. {@code dayTime} is taken modulo 24000.
 	 */
 	public String render() {
-		throw new UnsupportedOperationException("TODO");
+		long time = Math.floorMod(dayTime, 24000L);
+		StringBuilder sb = new StringBuilder(256);
+		sb.append("[game context]\n");
+		sb.append("player: ").append(playerName).append(" (").append(gameMode).append(") at x=").append(x)
+				.append(" y=").append(y).append(" z=").append(z).append(", facing ").append(facing)
+				.append(", holding ").append(heldItem).append('\n');
+		sb.append("world: ").append(dimension).append(", biome ").append(biome).append(", time ").append(time)
+				.append(" (").append(timeLabel(time)).append("), weather ").append(weather).append('\n');
+		sb.append("build space: local y=0 is world y=").append(groundY).append("; you can use local y from ")
+				.append(minBuildY - groundY).append(" to ").append(maxBuildY - groundY).append("; max ")
+				.append(maxBlocks).append(" blocks\n");
+		if (otherPlayers != null && !otherPlayers.isEmpty()) {
+			sb.append("other players online: ").append(String.join(", ", otherPlayers)).append('\n');
+		}
+		sb.append("[/game context]");
+		return sb.toString();
+	}
+
+	/** Coarse label for a time of day in ticks (0..23999). */
+	static String timeLabel(long time) {
+		long t = Math.floorMod(time, 24000L);
+		if (t < 1000) {
+			return "dawn";
+		} else if (t < 5000) {
+			return "morning";
+		} else if (t < 7000) {
+			return "noon";
+		} else if (t < 11000) {
+			return "afternoon";
+		} else if (t < 13000) {
+			return "sunset";
+		} else if (t < 17000) {
+			return "night";
+		} else if (t < 19000) {
+			return "midnight";
+		} else if (t < 23000) {
+			return "night";
+		}
+		return "dawn";
 	}
 }
