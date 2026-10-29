@@ -1,0 +1,21 @@
+pluginManagement {
+	repositories {
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+}
+
+rootProject.name = 'mc-ai'
+
+// Pure-Java core: LLM clients, the JavaScript build sandbox, geometry and placement math.
+include 'core'
+
+// The Fabric mod itself. It needs maven.fabricmc.net and Mojang's servers to build;
+// pass -PcoreOnly to configure/test only the core module where those are unreachable.
+if (!providers.gradleProperty('coreOnly').isPresent()) {
+	include 'fabric'
+}

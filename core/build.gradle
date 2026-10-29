@@ -1,0 +1,33 @@
+plugins {
+	id 'java-library'
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	// Sandboxed JavaScript engine for AI-written build scripts (bundled into the mod jar).
+	api "org.mozilla:rhino:${rhino_version}"
+	// Minecraft ships Gson at runtime, so the core only compiles against it.
+	compileOnly "com.google.code.gson:gson:${gson_version}"
+
+	testImplementation "com.google.code.gson:gson:${gson_version}"
+	testImplementation platform("org.junit:junit-bom:${junit_version}")
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+	// Java 21 so the core builds and tests on any modern JDK; the Fabric module compiles these sources for Java 25.
+	options.release = 21
+	options.encoding = 'UTF-8'
+}
+
+tasks.named('test', Test) {
+	useJUnitPlatform()
+	testLogging {
+		events 'failed'
+		exceptionFormat 'full'
+	}
+}
