@@ -31,3 +31,17 @@ tasks.named('test', Test) {
 		exceptionFormat 'full'
 	}
 }
+
+// Developer tool (test source set, not shipped): runs a build script or an LLM reply and renders a preview PNG.
+//   ./gradlew --offline -PcoreOnly :core:preview -Pargs="path/to/build.js /tmp/out.png [seed]"
+// Relative paths resolve against the repository root. Nothing depends on this task.
+tasks.register('preview', JavaExec) {
+	group = 'mcai'
+	description = 'Renders a build script (.js) or LLM reply (.md) to a PNG preview sheet: -Pargs="in out.png [seed]"'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'io.github.saocsb.mcai.core.preview.PreviewMain'
+	args providers.gradleProperty('args').map { it.trim().split(/\s+/).findAll { !it.isEmpty() } }.getOrElse([])
+	workingDir = rootDir
+	systemProperty 'java.awt.headless', 'true'
+	maxHeapSize = '2g'
+}
