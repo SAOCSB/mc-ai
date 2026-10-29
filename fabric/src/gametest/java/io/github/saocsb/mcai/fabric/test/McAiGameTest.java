@@ -202,6 +202,19 @@ public class McAiGameTest {
 		helper.assertTrue(validator.result(chest) != null && validator.result(chest).nbt() != null, "chest NBT kept");
 		helper.assertTrue(McBlockValidator.keepsNbt(Blocks.BARREL.defaultBlockState()), "barrel keeps NBT");
 		helper.assertFalse(McBlockValidator.keepsNbt(Blocks.OAK_SIGN.defaultBlockState()), "sign never keeps NBT");
+		String[] planted = {
+				"minecraft:chest{Items:[{Slot:0b,id:\"minecraft:written_book\",count:1,components:{\"minecraft:written_book_content\":"
+						+ "{title:\"t\",author:\"a\",pages:[{text:\"x\",click_event:{action:\"run_command\",command:\"/op me\"}}]}}}]}",
+				"minecraft:barrel{Items:[{Slot:0b,id:\"minecraft:shulker_box\",count:1,components:{\"minecraft:container\":"
+						+ "[{slot:0,item:{id:\"minecraft:pig_spawn_egg\",count:1,components:{\"minecraft:entity_data\":"
+						+ "{id:\"minecraft:command_block_minecart\"}}}}]}}]}",
+				"minecraft:chest{Items:[{Slot:0b,id:\"minecraft:paper\",count:1,components:{\"minecraft:custom_name\":"
+						+ "{text:\"x\",click_event:{action:\"show_dialog\",dialog:\"minecraft:server_links\"}}}}]}",
+		};
+		for (String id : planted) {
+			helper.assertValueEqual(validator.validate(List.of(id)).size(), 0, "still a valid block: " + id);
+			helper.assertTrue(validator.result(id) != null && validator.result(id).nbt() == null, "planted data dropped: " + id);
+		}
 
 		ServerLevel level = helper.getLevel();
 		Blueprint blueprint = new Blueprint(1_000, 64);
@@ -241,6 +254,9 @@ public class McAiGameTest {
 				"tp Alex",
 				"teleport @e[type=pig] ~ ~ ~",
 				"tp ~ ~ ~ ~ ~",
+				"give @s written_book[written_book_content={title:\"t\",author:\"a\",pages:[{text:\"x\",click_event:"
+						+ "{action:\"show_dialog\",dialog:{type:\"notice\",title:\"x\",action:{label:\"ok\",action:"
+						+ "{type:\"dynamic/run_command\",template:\"op x\"}}}}}]}] 1",
 		};
 		for (String command : rejected) {
 			helper.assertTrue(CommandRunner.check(command, policy, others, denied) != null, "must be rejected: " + command);
@@ -266,6 +282,20 @@ public class McAiGameTest {
 		helper.assertTrue(CommandRunner.check("give Alex diamond 1", policy, others, denied) == null, "names with allowSelectors");
 		helper.assertTrue(CommandRunner.check("summon command_block_minecart ~ ~ ~", policy, others, denied) != null,
 				"command data stays forbidden with allowSelectors");
+		helper.succeed();
+	}
+
+	@GameTest
+	public void rawSummonDistanceIsMeasuredFromThePlayer(GameTestHelper helper) {
+		helper.assertValueEqual(CommandRunner.summonDistance("summon pig", 100, 100), 0, "no position: at the player");
+		helper.assertValueEqual(CommandRunner.summonDistance("/summon pig ~3 ~ ~4", 100, 100), 5, "relative");
+		helper.assertValueEqual(CommandRunner.summonDistance("minecraft:summon pig 103 70 96 {NoAI:1b}", 100, 100), 5,
+				"absolute");
+		helper.assertValueEqual(CommandRunner.summonDistance("summon zombie ~ ~ ~5000", 0, 0), 5000, "far relative");
+		helper.assertValueEqual(CommandRunner.summonDistance("summon zombie ^ ^300 ^400", 0, 0), 500, "local: whole offset");
+		helper.assertValueEqual(CommandRunner.summonDistance("summon zombie 10000 64 0", 0, 0), 10000, "far absolute");
+		helper.assertValueEqual(CommandRunner.summonDistance("give @s diamond 10000 64 0", 0, 0), 0, "not a summon");
+		helper.assertValueEqual(CommandRunner.summonDistance("summon pig ~ ~ {NoAI:1b}", 0, 0), 0, "unparseable: rejected by the game");
 		helper.succeed();
 	}
 

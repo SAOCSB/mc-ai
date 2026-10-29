@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * Validates block strings with the game's {@code /setblock} parser ({@link BlockStateParser}, NBT allowed) against
@@ -35,8 +36,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <li>Game-master blocks (command, structure, jigsaw and test blocks) and the configured {@code build.deniedBlocks}
  *     are rejected as "not allowed on this server": {@link #validate} reports them and {@link #result} returns null.</li>
  * <li>Block-entity data is kept only for plain storage and decoration blocks ({@link #NBT_ALLOWED}); for everything
- *     else (signs, lecterns, spawners, ...) the NBT is dropped, so scripts cannot plant click commands or op-only
- *     data.</li>
+ *     else (signs, lecterns, spawners, ...) the NBT is dropped, and so is data that mentions commands, click events,
+ *     dialogs or entity/block-entity data anywhere (e.g. a book or spawn egg in a chest), so scripts cannot plant
+ *     click commands or op-only data.</li>
  * </ul>
  * Thread-safe: the agent calls {@link #validate} from worker threads (registry reads only).
  */
@@ -53,6 +55,11 @@ public final class McBlockValidator implements BlockValidator {
 			BlockEntityTypes.DROPPER, BlockEntityTypes.FURNACE, BlockEntityTypes.BLAST_FURNACE, BlockEntityTypes.SMOKER,
 			BlockEntityTypes.BREWING_STAND, BlockEntityTypes.BANNER, BlockEntityTypes.DECORATED_POT,
 			BlockEntityTypes.CHISELED_BOOKSHELF);
+	/** Never kept in block-entity data, at any depth (lower case; matched case-insensitively). */
+	static final List<String> NBT_FORBIDDEN_WORDS = List.of("click_event", "clickevent", "run_command", "show_dialog",
+			"entity_data", "blockentitytag", "entitytag", "command_block", "spawndata", "spawnpotentials");
+	/** A {@code command} key (command blocks, minecarts, click events). */
+	private static final Pattern COMMAND_KEY = Pattern.compile("\\bcommand[\"']?\\s*:", Pattern.CASE_INSENSITIVE);
 
 	private final HolderLookup<Block> blocks;
 	private final Map<String, BlockStateParser.BlockResult> cache = new ConcurrentHashMap<>();
@@ -136,6 +143,21 @@ public final class McBlockValidator implements BlockValidator {
 		return false;
 	}
 
+	/**
+	 * Whether block-entity data (as SNBT) carries anything a script must not plant: click events, commands, dialogs,
+	 * entity or block-entity data (spawn eggs, command block items), spawner data. Matched as text anywhere,
+	 * so nested items (shulker boxes in chests) are covered too.
+	 */
+	static boolean hasForbiddenData(String snbt) {
+		String lower = snbt.toLowerCase(Locale.ROOT);
+		for (String word : NBT_FORBIDDEN_WORDS) {
+			if (lower.contains(word)) {
+				return true;
+			}
+		}
+		return COMMAND_KEY.matcher(snbt).find();
+	}
+
 	/** Parses and caches {@code id}: either a (sanitized) result or the parser's reason for rejecting it. */
 	private Parsed parse(String id) {
 		BlockStateParser.BlockResult cached = cache.get(id);
@@ -152,7 +174,7 @@ public final class McBlockValidator implements BlockValidator {
 		if (reader.canRead()) {
 			return new Parsed(null, "unexpected text after the block: '" + id.substring(reader.getCursor()) + "'");
 		}
-		if (result.nbt() != null && !keepsNbt(result.blockState())) {
+		if (result.nbt() != null && (!keepsNbt(result.blockState()) || hasForbiddenData(result.nbt().toString()))) {
 			result = new BlockStateParser.BlockResult(result.blockState(), result.properties(), null);
 		}
 		if (cache.size() >= MAX_CACHE) {

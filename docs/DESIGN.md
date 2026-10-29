@@ -85,9 +85,9 @@ Results come back with `server.execute(...)`.
 | Concern | Default |
 |---|---|
 | Block entities (chests, furnaces, signs...) | Never overwritten (`protectBlockEntities`) |
-| Dangerous blocks | Command blocks, structure/jigsaw blocks and spawners are refused (`deniedBlocks`). Block-entity NBT is kept only for storage and decor blocks (chests, barrels, banners...); signs and lecterns lose it |
-| AI-issued commands | Limited to a whitelist (summon, give, time, weather, effect, playsound, title, tellraw, xp, enchant, tp) and `maxPerRequest`. They run as the player at permission level 2. Only `@s` and a bare `@p` are accepted as selectors (unless `allowSelectors`); other players' names, UUIDs, command/spawner NBT and denied blocks are rejected, and `tp` can only move the requester |
-| Build location | Within `maxDistance` (160) blocks of the player, inside the world border and outside spawn protection |
+| Dangerous blocks | Command blocks, structure/jigsaw blocks and spawners are refused (`deniedBlocks`). Block-entity NBT is kept only for storage and decor blocks (chests, barrels, banners...), and only when it holds no click events, dialogs, commands or entity/block-entity data at any depth; signs and lecterns lose it |
+| AI-issued commands | Limited to a whitelist (summon, give, time, weather, effect, playsound, title, tellraw, xp, enchant, tp) and `maxPerRequest`. They run as the player at permission level 2. Only `@s` and a bare `@p` are accepted as selectors (unless `allowSelectors`); other players' names, UUIDs, command/spawner NBT, run_command/show_dialog click actions and denied blocks are rejected, and `tp` can only move the requester |
+| Build location | Within `maxDistance` (160) blocks of the player, inside the world border and outside spawn protection. Summons farther away, through `summon()` or a raw `summon` command, are skipped |
 | Undo | Restores only positions that still hold what the build placed, and never empties containers players filled |
 | Provider settings | `/ai config provider/key/baseurl` need permission level 4, so game-master ops can't redirect the API key |
 | Very large builds | Need `/ai confirm` (`confirmAboveBlocks`) |

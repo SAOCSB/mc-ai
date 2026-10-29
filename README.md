@@ -15,9 +15,9 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 - **安全默认值**：
   - 不覆盖箱子等方块实体，撤销时也不会覆盖建造后被玩家改过的方块或装了东西的箱子；
   - 脚本跑在没有 Java 访问权限的沙箱里，有时间、方块数量和体积上限；
-  - 不能放命令方块、结构方块、刷怪笼等，告示牌、讲台等也不能带数据；
+  - 不能放命令方块、结构方块、刷怪笼等，告示牌、讲台等也不能带数据；箱子里的物品如果带点击命令、对话框或实体数据，整份数据都会被去掉；
   - AI 只能执行白名单里的指令，而且默认只能作用于提问的玩家自己；
-  - 建造不能离玩家太远，会跳过出生点保护区和世界边界以外的位置；
+  - 建造和召唤生物都不能离玩家太远，会跳过出生点保护区和世界边界以外的位置；
   - 超大建筑要先确认。
 
 ## 安装
@@ -110,7 +110,7 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 | `build.protectBlockEntities` | true | 不覆盖箱子、熔炉、告示牌等 |
 | `build.undoHistory` | 5 | 每个玩家可撤销的建造次数。撤销只还原仍是建造时那种方块的位置，并跳过装有物品的容器 |
 | `build.maxDistance` | 160 | 建造离玩家最近的一格超过这个水平距离（格）就拒绝建造，更远的召唤也会跳过；范围 8–4096，对 `absolute` 和 `previous` 放置同样有效 |
-| `build.deniedBlocks` | `command_block`、`chain_command_block`、`repeating_command_block`、`structure_block`、`jigsaw`、`spawner`、`trial_spawner` | 脚本不能放的方块（也不能出现在 AI 指令里）。命令方块、结构方块、拼图方块和测试方块无论是否列出都会被拒绝。另外只有箱子、陷阱箱、木桶、潜影盒、漏斗、发射器、投掷器、熔炉、高炉、烟熏炉、酿造台、旗帜、饰纹陶罐和雕纹书架能带方块数据（NBT），告示牌、讲台等的数据一律去掉 |
+| `build.deniedBlocks` | `command_block`、`chain_command_block`、`repeating_command_block`、`structure_block`、`jigsaw`、`spawner`、`trial_spawner` | 脚本不能放的方块（也不能出现在 AI 指令里）。命令方块、结构方块、拼图方块和测试方块无论是否列出都会被拒绝。另外只有箱子、陷阱箱、木桶、潜影盒、漏斗、发射器、投掷器、熔炉、高炉、烟熏炉、酿造台、旗帜、饰纹陶罐和雕纹书架能带方块数据（NBT），而且数据里（包括里面的物品）不能有点击事件、对话框、命令或实体/方块实体数据，否则整份去掉；告示牌、讲台等的数据一律去掉 |
 | `commands.enabled` | true | 是否允许 AI 执行指令（召唤、给予、时间、天气……） |
 | `commands.whitelist` | `summon`、`give`、`time`、`weather`、`effect`、`playsound`、`title`、`tellraw`、`xp`、`experience`、`enchant`、`tp`、`teleport` | 允许 AI 使用的指令。`execute` 和 `function` 永远不允许。`particle`（数量没有上限）和 `say`（会再次触发 AI）不再默认允许，旧版配置升级时会自动去掉 |
 | `commands.allowSelectors` | false | 是否允许 AI 指令作用于别人：`@a`/`@e`/`@r`/`@n`、`@p[...]`、其他在线玩家的名字或 UUID，以及传送别人。关闭时只能用 `@s` 和不带参数的 `@p`，`tp` 只能是 `tp <x> <y> <z>` 或 `tp @s ...`。无论如何，带命令方块、刷怪笼或方块实体数据的指令都会被拒绝 |
@@ -159,7 +159,7 @@ MC-AI is a server-side **Fabric mod for Minecraft Java 26.3** that lets players 
 
 The other commands are `/ai stop`, `undo`, `confirm`, `clear`, `status` and `help`. Admins (`permissions.adminLevel`, default 2) also get `/ai reload` and `/ai config model <value>`; `/ai config provider|key|baseurl <value>` need level 4 (server owner or console).
 
-**Safety defaults:** scripts cannot place command, structure, jigsaw or test blocks or anything in `build.deniedBlocks` (spawners by default), and block data is kept only for storage blocks (no sign or lectern data). AI commands come from a whitelist (`particle` and `say` are no longer in it), may not carry command or block-entity data, and unless `commands.allowSelectors` is set can only target the requesting player (`@s`, bare `@p`, `tp <x> <y> <z>`). Builds farther than `build.maxDistance` (160) blocks are refused, and positions under spawn protection or outside the world border are skipped. `/ai undo` only reverts positions that still hold the block the build placed and never empties a container.
+**Safety defaults:** scripts cannot place command, structure, jigsaw or test blocks or anything in `build.deniedBlocks` (spawners by default), and block data is kept only for storage blocks and only without click events, dialogs, commands or entity data inside (no sign or lectern data). AI commands come from a whitelist (`particle` and `say` are no longer in it), may not carry command or block-entity data or run_command/show_dialog click actions, and unless `commands.allowSelectors` is set can only target the requesting player (`@s`, bare `@p`, `tp <x> <y> <z>`). Builds and summons farther than `build.maxDistance` (160) blocks are refused, and positions under spawn protection or outside the world border are skipped. `/ai undo` only reverts positions that still hold the block the build placed and never empties a container.
 
 **Build:** `./gradlew build` with JDK 25. Use `./gradlew -PcoreOnly :core:test` for the Minecraft-independent core only.
 

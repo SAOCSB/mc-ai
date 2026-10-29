@@ -28,15 +28,16 @@ import java.util.regex.Pattern;
  * <ul>
  * <li>be one line, with a whitelisted root (never {@code execute} or {@code function});</li>
  * <li>carry no block-entity, spawner or command data (TileEntityData, block_entity_data, command blocks,
- *     {@code Command:} keys, SpawnData...), no block from {@code build.deniedBlocks}, and not summon a command
- *     block or spawner minecart;</li>
+ *     {@code Command:} keys, run_command or show_dialog click actions, SpawnData...), no block from
+ *     {@code build.deniedBlocks}, and not summon a command block or spawner minecart;</li>
  * <li>unless {@code allowSelectors} is set, target only the requester: {@code @s}, {@code @s[...]} or a bare
  *     {@code @p}; no other selector, no other online player's name, no UUID, and {@code tp}/{@code teleport} only
  *     as {@code tp <x> <y> <z>} or {@code tp @s ...}.</li>
  * </ul>
- * At most {@code maxPerRequest} commands run per request, and summons farther than {@code build.maxDistance} from
- * the player are skipped. Commands run as the player, at the configured permission level, with their chat output
- * suppressed; {@code time} and {@code weather} run in the overworld (26.3 keeps the world clock there).
+ * At most {@code maxPerRequest} commands run per request, and summons (the {@code summon()} action or a raw
+ * {@code summon} command) farther than {@code build.maxDistance} from the player are skipped. Commands run as the
+ * player, at the configured permission level, with their chat output suppressed; {@code time} and {@code weather}
+ * run in the overworld (26.3 keeps the world clock there).
  *
  * <p>A {@link WorldAction.Wait} splits the list: {@link #run} executes the actions before it and returns the rest
  * with the delay in {@link Report#remaining()} / {@link Report#waitTicks()}, for the caller to schedule.
@@ -56,7 +57,8 @@ public final class CommandRunner {
 	private static final Pattern COMMAND_KEY = Pattern.compile("\\bcommand[\"']?\\s*:", Pattern.CASE_INSENSITIVE);
 	/** Never allowed anywhere in an AI command (lower case; matched case-insensitively). */
 	private static final List<String> FORBIDDEN_WORDS = List.of("tileentitydata", "block_entity_data", "blockentitytag",
-			"command_block", "allow_op_features", "spawndata", "spawnpotentials", "spawner_minecart");
+			"command_block", "allow_op_features", "spawndata", "spawnpotentials", "spawner_minecart", "run_command",
+			"show_dialog");
 	private static final Set<String> DENIED_ENTITIES = Set.of("command_block_minecart", "spawner_minecart");
 	private static final Set<String> NEVER_ALLOWED = Set.of("execute", "function");
 	private static final Set<String> TELEPORT = Set.of("tp", "teleport");
@@ -140,7 +142,8 @@ public final class CommandRunner {
 			for (WorldAction action : batch.now()) {
 				String command = toCommand(action, transform);
 				boolean tooFar = action instanceof WorldAction.Summon s
-						&& horizontalDistance(transform.worldX(s.x(), s.z()), transform.worldZ(s.x(), s.z()), at) > build.maxDistance;
+						? horizontalDistance(transform.worldX(s.x(), s.z()), transform.worldZ(s.x(), s.z()), at) > build.maxDistance
+						: summonDistance(command, player.getX(), player.getZ()) > build.maxDistance;
 				if (tooFar || !isValid(action) || check(command, policy, others, build.deniedBlocks) != null
 						|| alreadyExecuted + ok + failed >= policy.maxPerRequest) {
 					blocked.add(shorten(command));
@@ -367,6 +370,35 @@ public final class CommandRunner {
 		double dx = (double) x - to.getX();
 		double dz = (double) z - to.getZ();
 		return (int) Math.min(Integer.MAX_VALUE, Math.ceil(Math.sqrt(dx * dx + dz * dz)));
+	}
+
+	/**
+	 * How far (horizontally, rounded up) a raw {@code summon} command spawns its entity from a source at
+	 * {@code (x, z)}. Local {@code ^} coordinates count with the length of the whole offset. 0 for other commands, a
+	 * summon without a position (it spawns at the source) and coordinates that don't parse (the game rejects those).
+	 */
+	public static int summonDistance(String command, double x, double z) {
+		String cmd = stripSlash(command == null ? "" : command);
+		String[] parts = cmd.split("\\s+");
+		if (!root(cmd).equals("summon") || parts.length < 5) {
+			return 0;
+		}
+		double[] offset = new double[3];
+		boolean local = false;
+		for (int i = 0; i < 3; i++) {
+			String token = parts[i + 2];
+			if (!isCoordinate(token)) {
+				return 0;
+			}
+			char first = token.charAt(0);
+			boolean relative = first == '~' || first == '^';
+			local |= first == '^';
+			double value = relative && token.length() == 1 ? 0 : Double.parseDouble(relative ? token.substring(1) : token);
+			offset[i] = relative || i == 1 ? value : value - (i == 0 ? x : z);
+		}
+		double distance = local ? Math.sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2])
+				: Math.sqrt(offset[0] * offset[0] + offset[2] * offset[2]);
+		return (int) Math.min(Integer.MAX_VALUE, Math.ceil(distance));
 	}
 
 	private static List<String> otherPlayers(MinecraftServer server, ServerPlayer requester) {

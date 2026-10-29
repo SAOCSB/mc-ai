@@ -31,7 +31,9 @@ import java.util.regex.Pattern;
  * <p>Fences are found more leniently than CommonMark, because models do not always follow it: an opening or
  * closing fence line may be indented by any amount of spaces and tabs (code lines lose up to that much
  * indentation), and a backtick fence may also open in the middle of a line after chat text
- * ({@code Here you go: ```js}); the text before it stays chat. A backtick run that is closed again on the same
+ * ({@code Here you go: ```js}); the text before it stays chat. Such a fence's info string must be a single word
+ * unless it starts with a script tag, so prose like {@code Use ``` to fence code} is not a fence. A backtick run
+ * that is closed again on the same
  * line is an inline code span, not a fence. The info string after the fence starts with the language tag
  * (case-insensitive; anything after the first word is ignored), and a backtick fence's info string may not
  * contain backticks. Inline {@code `code`} spans stay in the chat text.
@@ -224,7 +226,12 @@ public final class ResponseParser {
 		if (ch == '`' && info.indexOf('`') >= 0) {
 			return null;
 		}
-		String tag = info.isEmpty() ? "" : info.split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+		String[] words = info.isEmpty() ? new String[] {""} : info.split("\\s+", 2);
+		String tag = words[0].toLowerCase(Locale.ROOT);
+		if (!lead.isEmpty() && words.length > 1 && !SCRIPT_TAGS.contains(tag)) {
+			// "Use ``` to fence code": prose, not a fence
+			return null;
+		}
 		return new Fence(ch, length, indent, tag, lead);
 	}
 

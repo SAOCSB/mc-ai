@@ -174,6 +174,17 @@ class ResponseParserTest {
 	}
 
 	@Test
+	void backticksInProseAreNotAFence() {
+		ParsedResponse p = parse("Wrap code in ``` to show it.\nNext line.");
+		assertNull(p.script());
+		assertFalse(p.unterminatedCode());
+		assertEquals("Wrap code in ``` to show it.\nNext line.", p.chatText());
+		assertFalse(ResponseParser.hasCodeBlock("Wrap code in ``` to show it."));
+		// a script tag still opens a fence after text, whatever follows it
+		assertEquals("a();", parse("Code: ```js run it\na();\n```").script());
+	}
+
+	@Test
 	void inlineCodeSpansAreNotFences() {
 		ParsedResponse p = parse("Use ```fill()``` to build walls.\nMore text");
 		assertNull(p.script());
