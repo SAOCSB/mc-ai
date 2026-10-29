@@ -92,7 +92,8 @@ public final class AiAgent {
 	/** {@link AgentOutcome#failure()} when the model refused the request. */
 	public static final String FAILURE_REFUSED = "refused";
 
-	static final String TRUNCATED_ERROR = "Your reply was cut off (output token limit) before the script ended.";
+	/** Repair feedback (and, after the last attempt, the outcome failure) for a reply cut off by the token limit. */
+	public static final String TRUNCATED_ERROR = "Your reply was cut off (output token limit) before the script ended.";
 	static final String EMPTY_RESULT_ERROR = "The script ran but placed no blocks and requested no actions.";
 	static final String EMPTY_REPLY_ERROR = "Your reply was empty.";
 	static final String NO_SCRIPT_ERROR = "Your reply did not contain a ```js code block with the script.";

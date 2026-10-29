@@ -315,8 +315,17 @@ public final class AiService implements BuildManager.Listener {
 		} else if (outcome == null) {
 			return;
 		} else if (outcome.failure() != null) {
-			error(player, "error.script_failed", outcome.failure());
+			if (AiAgent.FAILURE_REFUSED.equals(outcome.failure())) {
+				error(player, "error.refused");
+			} else if (AiAgent.TRUNCATED_ERROR.equals(outcome.failure())) {
+				error(player, "error.truncated");
+			} else {
+				error(player, "error.script_failed", outcome.failure());
+			}
 		} else if (outcome.result() != null) {
+			for (String warning : outcome.warnings()) {
+				info(player, "build.warning", warning);
+			}
 			try {
 				handleResult(player, session, outcome.result());
 			} catch (RuntimeException e) {

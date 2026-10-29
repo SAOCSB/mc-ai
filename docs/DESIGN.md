@@ -21,7 +21,8 @@ Everything runs on the server (singleplayer uses the integrated server), so vani
    - calls the LLM with the system prompt, the trimmed history and the new user turn, streaming progress back as action-bar status;
    - parses the reply into chat text and a script;
    - runs the script in `ScriptEngine`, then validates every block id in the blueprint palette against the game registry;
-   - if anything fails, sends the error back to the model and asks for a corrected script, up to `maxRepairAttempts` times.
+   - fixes common id mistakes automatically with `BlockFixer` (aliases, plural/singular, `_planks_stairs` → `_stairs`, and close same-family suggestions);
+   - if anything still fails, sends the error back to the model and asks for a corrected script, up to `maxRepairAttempts` times. After the last attempt, positions with unknown ids are dropped instead of failing the build.
 4. The outcome returns to the server thread:
    - `PlacementPlanner` computes the world transform;
    - `BuildPlanner` turns the blueprint into a `BuildJob`, with block states rotated to the player's facing;

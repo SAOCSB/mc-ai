@@ -97,6 +97,7 @@ public final class Messages {
 		m.put("build.progress", "「{0}」建造中…… {1}%（{2}/{3}）");
 		m.put("build.done", "「{0}」建造完成！放置了 {1} 个方块，用时 {2} 秒。输入 /ai undo 可撤销。");
 		m.put("build.skipped", "有 {0} 个位置被跳过（受保护的方块或超出了建筑高度限制）。");
+		m.put("build.warning", "提示：{0}");
 		m.put("build.confirm", "「{0}」共有 {1} 个方块，规模较大。输入 /ai confirm 开始建造，或输入 /ai stop 取消。");
 		m.put("build.confirm_none", "目前没有等待确认的建造。");
 		m.put("build.queued", "服务器上还有其他建造在进行，你的建造已排队，前面还有 {0} 个任务。");
@@ -156,6 +157,7 @@ public final class Messages {
 		m.put("build.progress", "Building \"{0}\"... {1}% ({2}/{3})");
 		m.put("build.done", "\"{0}\" is done! Placed {1} blocks in {2} s. Type /ai undo to undo it.");
 		m.put("build.skipped", "Skipped {0} positions (protected blocks or outside the build height).");
+		m.put("build.warning", "Note: {0}");
 		m.put("build.confirm", "\"{0}\" has {1} blocks, which is a big build. Type /ai confirm to start it, or /ai stop to cancel.");
 		m.put("build.confirm_none", "There is no build waiting for confirmation.");
 		m.put("build.queued", "Other builds are running on the server; yours is queued with {0} job(s) ahead of it.");

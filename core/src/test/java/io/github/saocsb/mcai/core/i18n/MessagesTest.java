@@ -29,6 +29,7 @@ class MessagesTest {
 		put("build.progress", 4);
 		put("build.done", 3);
 		put("build.skipped", 1);
+		put("build.warning", 1);
 		put("build.confirm", 2);
 		put("build.confirm_none", 0);
 		put("build.queued", 1);
