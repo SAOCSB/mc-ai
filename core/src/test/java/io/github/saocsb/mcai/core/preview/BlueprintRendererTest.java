@@ -196,7 +196,11 @@ class BlueprintRendererTest {
 		PrintStream out = new PrintStream(bytes, true, StandardCharsets.UTF_8);
 		int code = PreviewMain.run(new String[] {reply.toString(), OUT.resolve("none.png").toString()}, out, out);
 		assertEquals(PreviewMain.EXIT_SCRIPT, code);
-		assertTrue(bytes.toString(StandardCharsets.UTF_8).contains("\"ok\": false"));
+		String json = bytes.toString(StandardCharsets.UTF_8);
+		assertTrue(json.contains("\"ok\": false") && json.contains("\"error\": \"no build script"), json);
+		for (String key : new String[] {"name", "blocks", "bounds", "palette", "actions", "logs", "elapsedMillis", "placement"}) {
+			assertTrue(json.contains("\"" + key + "\":"), key + " missing: " + json);
+		}
 		Files.deleteIfExists(reply);
 	}
 

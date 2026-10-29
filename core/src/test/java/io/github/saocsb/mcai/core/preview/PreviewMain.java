@@ -87,6 +87,15 @@ public final class PreviewMain {
 		summary.add("error", null);
 		summary.addProperty("file", input.toString());
 		summary.addProperty("seed", seed);
+		// Stable shape: every key is present even when the script fails (filled in on success).
+		summary.add("name", null);
+		summary.addProperty("blocks", 0);
+		summary.add("bounds", null);
+		summary.add("palette", new JsonArray());
+		summary.add("actions", new JsonArray());
+		summary.add("logs", new JsonArray());
+		summary.add("elapsedMillis", null);
+		summary.add("placement", null);
 
 		String text;
 		try {
