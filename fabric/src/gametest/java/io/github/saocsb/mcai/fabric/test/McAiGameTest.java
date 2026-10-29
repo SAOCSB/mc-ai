@@ -353,6 +353,37 @@ public class McAiGameTest {
 		helper.succeed();
 	}
 
+	@GameTest
+	public void doorPlacedInAWallGetsItsUpperHalf(GameTestHelper helper) {
+		// The script pattern walls(...) then block(x, 0, z, door): the blueprint holds a wall block above the door.
+		ServerLevel level = helper.getLevel();
+		Blueprint blueprint = new Blueprint(1_000, 64);
+		for (int x = 0; x <= 4; x++) {
+			for (int y = 0; y <= 2; y++) {
+				blueprint.set(x, y, 0, "minecraft:cobblestone");
+			}
+		}
+		blueprint.set(2, 0, 0, "minecraft:oak_door[facing=south]");
+		// A complete door written by the script is left exactly as written.
+		blueprint.set(5, 0, 0, "minecraft:spruce_door[facing=south,half=lower]");
+		blueprint.set(5, 1, 0, "minecraft:spruce_door[facing=south,half=upper]");
+		Transform transform = transformAt(helper, new BlockPos(1, 1, 3), Rotation.NONE);
+		BuildJob job = BuildPlanner.plan(level, blueprint, transform, "wall-door", validator(helper), null, List.of());
+		helper.assertValueEqual(job.total(), 17, "one entry per position (the door top replaces the wall block)");
+		job.runToCompletion(true);
+
+		BlockState top = level.getBlockState(world(transform, 2, 1, 0));
+		helper.assertTrue(top.getBlock() == Blocks.OAK_DOOR, "upper door half replaces the wall block above the door");
+		helper.assertValueEqual(top.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF), DoubleBlockHalf.UPPER, "door half");
+		helper.assertValueEqual(level.getBlockState(world(transform, 2, 0, 0)).getValue(BlockStateProperties.DOUBLE_BLOCK_HALF),
+				DoubleBlockHalf.LOWER, "lower door half");
+		helper.assertTrue(level.getBlockState(world(transform, 2, 2, 0)).getBlock() == Blocks.COBBLESTONE, "lintel kept");
+		helper.assertTrue(level.getBlockState(world(transform, 1, 1, 0)).getBlock() == Blocks.COBBLESTONE, "wall kept");
+		helper.assertValueEqual(level.getBlockState(world(transform, 5, 1, 0)).getValue(BlockStateProperties.DOUBLE_BLOCK_HALF),
+				DoubleBlockHalf.UPPER, "explicit upper half kept");
+		helper.succeed();
+	}
+
 	private static McBlockValidator validator(GameTestHelper helper) {
 		McBlockValidator validator = new McBlockValidator(helper.getLevel().holderLookup(Registries.BLOCK));
 		validator.setDeniedBlocks(ModConfig.DEFAULT_DENIED_BLOCKS);

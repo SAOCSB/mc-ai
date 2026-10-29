@@ -110,8 +110,10 @@ public final class BuildPlanner {
 	 * plants, liquids...) by y ascending; insertion order is kept within a layer.
 	 *
 	 * <p>Fix-ups for common script mistakes: leaves are made persistent (so they never decay), and a lower door /
-	 * tall-plant half or a bed foot whose other half the script left out (nothing or air at that position, e.g.
-	 * after {@code clear()}) gets that half added.
+	 * tall-plant half or a bed foot gets its other half added unless the script already put exactly that half there.
+	 * The added half replaces whatever else the script left at that position (nothing, air after {@code clear()}, or
+	 * a wall block after {@code walls()}), so there is one entry per position; only another two-part block's base
+	 * half is never replaced.
 	 *
 	 * <p>Ids the validator refuses (denied blocks) are skipped like unknown ids; block-entity data the validator
 	 * does not allow was already removed from its results.
@@ -167,8 +169,9 @@ public final class BuildPlanner {
 			category[n + i] = inputs[n + i] == null ? INVALID : OTHER;
 		}
 
-		Collector collector = new Collector(level, blueprint, transform, index, category, companion, companionDx, companionDz,
-				blueprint.size());
+		Collector collector = new Collector(level, blueprint, transform, index, inputs, category, companion, companionDx,
+				companionDz, blueprint.size());
+		blueprint.forEach(collector::claimCompanion);
 		blueprint.forEach(collector);
 
 		long[] keys = Arrays.copyOf(collector.keys, collector.count);
@@ -211,12 +214,24 @@ public final class BuildPlanner {
 		return result;
 	}
 
-	/** Collects world positions and sort keys: category (8 bits) | y key (24 bits) | sequence (32 bits). */
+	/** Packs local coordinates (each within +/-2^19) into one long, for the companion claims. */
+	private static long packLocal(int x, int y, int z) {
+		return ((long) (x + (1 << 19)) << 40) | ((long) (y + (1 << 19)) << 20) | (z + (1 << 19));
+	}
+
+	/**
+	 * Collects world positions and sort keys: category (8 bits) | y key (24 bits) | sequence (32 bits).
+	 *
+	 * <p>Two passes over the blueprint: {@link #claimCompanion} decides which base blocks get their other half added
+	 * and which positions those halves take over; {@link #accept} then emits one entry per position, with every added
+	 * half right after its base (so it also sorts after it).
+	 */
 	private static final class Collector implements Blueprint.Visitor {
 		final ServerLevel level;
 		final Blueprint blueprint;
 		final Transform transform;
 		final Map<String, Integer> index;
+		final BlockInput[] inputs;
 		final byte[] category;
 		final byte[] companion;
 		final int[] companionDx;
@@ -224,18 +239,21 @@ public final class BuildPlanner {
 		final int paletteSize;
 		final int minY;
 		final int maxY;
+		/** Companion position (packed local) -> base position (packed local) whose added half goes there. */
+		final Map<Long, Long> claims = new HashMap<>();
 		long[] keys;
 		long[] positions;
 		int[] palette;
 		int count;
 		int skipped;
 
-		Collector(ServerLevel level, Blueprint blueprint, Transform transform, Map<String, Integer> index, byte[] category,
-				byte[] companion, int[] companionDx, int[] companionDz, int size) {
+		Collector(ServerLevel level, Blueprint blueprint, Transform transform, Map<String, Integer> index,
+				BlockInput[] inputs, byte[] category, byte[] companion, int[] companionDx, int[] companionDz, int size) {
 			this.level = level;
 			this.blueprint = blueprint;
 			this.transform = transform;
 			this.index = index;
+			this.inputs = inputs;
 			this.category = category;
 			this.companion = companion;
 			this.companionDx = companionDx;
@@ -248,47 +266,93 @@ public final class BuildPlanner {
 			this.palette = new int[size];
 		}
 
+		/**
+		 * First pass: a base block (lower door / tall-plant half, bed foot) claims its companion position unless the
+		 * script put exactly the other half there, or another two-part block's base. The first claim wins.
+		 */
+		void claimCompanion(int x, int y, int z, String blockId) {
+			Integer base = index.get(blockId);
+			if (base == null || category[base] == INVALID || companion[base] == NO_COMPANION || !inWorld(x, y, z)) {
+				return;
+			}
+			int cx = companionX(base, x);
+			int cy = companionY(base, y);
+			int cz = companionZ(base, z);
+			String there = blueprint.get(cx, cy, cz);
+			Integer other = there == null ? null : index.get(there);
+			if (other != null && (companion[other] != NO_COMPANION || isOtherHalf(other, base))) {
+				return;
+			}
+			claims.putIfAbsent(packLocal(cx, cy, cz), packLocal(x, y, z));
+		}
+
 		@Override
 		public void accept(int x, int y, int z, String blockId) {
+			long here = packLocal(x, y, z);
+			if (claims.containsKey(here)) {
+				return; // replaced by the other half of a door, bed or tall plant
+			}
 			Integer paletteIndex = index.get(blockId);
 			if (paletteIndex == null || category[paletteIndex] == INVALID) {
 				skipped++;
 				return;
 			}
-			if (!add(x, y, z, paletteIndex)) {
+			if (!add(x, y, z, paletteIndex) || companion[paletteIndex] == NO_COMPANION) {
 				return;
 			}
-			byte kind = companion[paletteIndex];
-			if (kind == NO_COMPANION) {
-				return;
-			}
-			int cx = kind == BED_HEAD ? x + companionDx[paletteIndex] : x;
-			int cy = kind == UPPER_HALF ? y + 1 : y;
-			int cz = kind == BED_HEAD ? z + companionDz[paletteIndex] : z;
-			if (isFree(blueprint.get(cx, cy, cz))) {
-				// An air entry at that position sorts first (air is placed before everything else), so the
-				// companion written afterwards wins.
+			int cx = companionX(paletteIndex, x);
+			int cy = companionY(paletteIndex, y);
+			int cz = companionZ(paletteIndex, z);
+			Long claimer = claims.get(packLocal(cx, cy, cz));
+			if (claimer != null && claimer == here) {
 				add(cx, cy, cz, paletteSize + paletteIndex);
 			}
 		}
 
-		/** True when the script put nothing or air at a companion position. */
-		private boolean isFree(String blockId) {
-			if (blockId == null) {
-				return true;
+		/** Whether palette entry {@code other} is exactly the half that base entry {@code base} would add. */
+		private boolean isOtherHalf(int other, int base) {
+			if (inputs[other] == null || inputs[paletteSize + base] == null) {
+				return false;
 			}
-			Integer other = index.get(blockId);
-			return other != null && category[other] == AIR;
+			BlockState have = inputs[other].getState();
+			if (have.getBlock() != inputs[paletteSize + base].getState().getBlock()) {
+				return false;
+			}
+			if (companion[base] == UPPER_HALF) {
+				return have.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
+						&& have.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.UPPER;
+			}
+			return have.hasProperty(BlockStateProperties.BED_PART) && have.getValue(BlockStateProperties.BED_PART) == BedPart.HEAD;
+		}
+
+		private int companionX(int base, int x) {
+			return companion[base] == BED_HEAD ? x + companionDx[base] : x;
+		}
+
+		private int companionY(int base, int y) {
+			return companion[base] == UPPER_HALF ? y + 1 : y;
+		}
+
+		private int companionZ(int base, int z) {
+			return companion[base] == BED_HEAD ? z + companionDz[base] : z;
+		}
+
+		/** Whether a local position lands inside the build height and the world limit. */
+		private boolean inWorld(int x, int y, int z) {
+			int wx = transform.worldX(x, z);
+			int wz = transform.worldZ(x, z);
+			return !level.isOutsideBuildHeight(transform.worldY(y)) && wx >= -WORLD_LIMIT && wx < WORLD_LIMIT
+					&& wz >= -WORLD_LIMIT && wz < WORLD_LIMIT;
 		}
 
 		private boolean add(int x, int y, int z, int paletteIndex) {
-			int wx = transform.worldX(x, z);
-			int wy = transform.worldY(y);
-			int wz = transform.worldZ(x, z);
-			if (level.isOutsideBuildHeight(wy) || wx < -WORLD_LIMIT || wx >= WORLD_LIMIT || wz < -WORLD_LIMIT || wz >= WORLD_LIMIT) {
+			if (!inWorld(x, y, z)) {
 				skipped++;
 				return false;
 			}
+			int wx = transform.worldX(x, z);
+			int wy = transform.worldY(y);
+			int wz = transform.worldZ(x, z);
 			if (count == keys.length) {
 				int capacity = Math.max(16, keys.length + (keys.length >> 1));
 				keys = Arrays.copyOf(keys, capacity);
