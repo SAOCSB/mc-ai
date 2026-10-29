@@ -96,7 +96,8 @@ public final class Messages {
 		m.put("build.start", "开始建造「{0}」，共 {1} 个方块，预计需要 {2} 秒。");
 		m.put("build.progress", "「{0}」建造中…… {1}%（{2}/{3}）");
 		m.put("build.done", "「{0}」建造完成！放置了 {1} 个方块，用时 {2} 秒。输入 /ai undo 可撤销。");
-		m.put("build.skipped", "有 {0} 个位置被跳过（受保护的方块或超出了建筑高度限制）。");
+		m.put("build.skipped", "有 {0} 个位置被跳过（受保护的方块、出生点保护区、世界边界之外或超出了建筑高度限制）。");
+		m.put("build.replace_missing", "撤销记录里找不到要替换的上一个建筑（可能已被撤销），所以这次没有先移除旧建筑。");
 		m.put("build.warning", "提示：{0}");
 		m.put("build.confirm", "「{0}」共有 {1} 个方块，规模较大。输入 /ai confirm 开始建造，或输入 /ai stop 取消。");
 		m.put("build.confirm_none", "目前没有等待确认的建造。");
@@ -107,7 +108,9 @@ public final class Messages {
 		m.put("undo.start", "正在撤销「{0}」（{1} 个方块）……");
 		m.put("undo.done", "已撤销「{0}」。");
 		m.put("undo.nothing", "没有可以撤销的建造。");
+		m.put("undo.skipped", "有 {0} 个位置在建造之后被改动过或放有物品，撤销时保留了原样。");
 		m.put("error.busy", "你的上一个请求还在处理中，请稍等一下（输入 /ai stop 可以取消）。");
+		m.put("error.too_far", "这个建造离你太远了（{0} 格），服务器最多允许 {1} 格。请走近一些再试。");
 		m.put("error.cooldown", "说得太快啦，请 {0} 秒后再试。");
 		m.put("error.server_busy", "{0} 现在有点忙，请稍后再试。");
 		m.put("error.no_api_key", "服务商「{0}」还没有配置 API 密钥。请管理员使用 /ai config key <密钥> 进行设置。");
@@ -126,6 +129,8 @@ public final class Messages {
 		m.put("cmd.reload_failed", "重新加载配置失败：{0}");
 		m.put("cmd.config_set", "已将 {0} 设置为 {1}。");
 		m.put("cmd.unknown_provider", "未知的服务商「{0}」。可用的服务商有：{1}");
+		m.put("cmd.config_unavailable", "配置文件加载失败，暂时不能修改设置。请修正 mcai.json 后执行 /ai reload。");
+		m.put("cmd.config_usage", "用法：/ai config provider|model|key|baseurl <值>（provider、key 和 baseurl 需要服务器所有者权限）");
 		m.put("cmd.status", "服务商：{0}\n模型：{1}\nAPI 密钥：{2}\n进行中的请求：{3}\n排队中的建造：{4}");
 		m.put("cmd.help", String.join("\n",
 				"MC-AI 使用帮助：",
@@ -156,7 +161,8 @@ public final class Messages {
 		m.put("build.start", "Building \"{0}\": {1} blocks, about {2} s.");
 		m.put("build.progress", "Building \"{0}\"... {1}% ({2}/{3})");
 		m.put("build.done", "\"{0}\" is done! Placed {1} blocks in {2} s. Type /ai undo to undo it.");
-		m.put("build.skipped", "Skipped {0} positions (protected blocks or outside the build height).");
+		m.put("build.skipped", "Skipped {0} positions (protected blocks, spawn protection, outside the world border or the build height).");
+		m.put("build.replace_missing", "The previous build is no longer in your undo history (it may have been undone), so nothing was removed first.");
 		m.put("build.warning", "Note: {0}");
 		m.put("build.confirm", "\"{0}\" has {1} blocks, which is a big build. Type /ai confirm to start it, or /ai stop to cancel.");
 		m.put("build.confirm_none", "There is no build waiting for confirmation.");
@@ -167,7 +173,9 @@ public final class Messages {
 		m.put("undo.start", "Undoing \"{0}\" ({1} blocks)...");
 		m.put("undo.done", "\"{0}\" has been undone.");
 		m.put("undo.nothing", "There is nothing to undo.");
+		m.put("undo.skipped", "{0} positions were changed after the build or hold items, so they were left as they are.");
 		m.put("error.busy", "Your previous request is still being processed. Please wait, or type /ai stop to cancel it.");
+		m.put("error.too_far", "That build would be {0} blocks away from you; this server allows at most {1}. Move closer and try again.");
 		m.put("error.cooldown", "You''re going too fast! Try again in {0} s.");
 		m.put("error.server_busy", "{0} is busy right now. Please try again in a moment.");
 		m.put("error.no_api_key", "No API key is configured for \"{0}\". An admin can set one with /ai config key <key>.");
@@ -186,6 +194,8 @@ public final class Messages {
 		m.put("cmd.reload_failed", "Failed to reload the config: {0}");
 		m.put("cmd.config_set", "Set {0} to {1}.");
 		m.put("cmd.unknown_provider", "Unknown provider \"{0}\". Available providers: {1}");
+		m.put("cmd.config_unavailable", "The config file failed to load, so settings can''t be changed now. Fix mcai.json and run /ai reload.");
+		m.put("cmd.config_usage", "Usage: /ai config provider|model|key|baseurl <value> (provider, key and baseurl need server owner permission)");
 		m.put("cmd.status", "Provider: {0}\nModel: {1}\nAPI key: {2}\nActive requests: {3}\nQueued builds: {4}");
 		m.put("cmd.help", String.join("\n",
 				"MC-AI help:",

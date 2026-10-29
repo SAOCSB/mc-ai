@@ -101,7 +101,9 @@ public final class PromptBuilder {
 					+ "do not use them.";
 		}
 		return "World-action functions are enabled. Commands allowed on this server: " + String.join(", ", commands)
-				+ ". summon/give/time/weather/effect only work if their command is in that list.";
+				+ ". summon/give/time/weather/effect only work if their command is in that list. Commands run as the player"
+				+ " at the player's position; target the player with @s, because other selectors (@a, @e, @p[...]) and"
+				+ " player names are rejected unless the server allows them.";
 	}
 
 	/** Substitutes the placeholders in {@code template}; unknown placeholders are left as they are. */

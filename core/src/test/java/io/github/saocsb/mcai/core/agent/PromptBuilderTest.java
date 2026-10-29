@@ -14,7 +14,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PromptBuilderTest {
 	private static final String ENABLED = "World-action functions are enabled. Commands allowed on this server: "
-			+ "summon, give, time. summon/give/time/weather/effect only work if their command is in that list.";
+			+ "summon, give, time. summon/give/time/weather/effect only work if their command is in that list. Commands run "
+			+ "as the player at the player's position; target the player with @s, because other selectors (@a, @e, @p[...]) "
+			+ "and player names are rejected unless the server allows them.";
 	private static final String DISABLED = "World-action functions (summon, give, time, weather, effect, command) are "
 			+ "disabled on this server; do not use them.";
 

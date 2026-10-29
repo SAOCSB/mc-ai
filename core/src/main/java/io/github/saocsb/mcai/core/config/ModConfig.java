@@ -7,7 +7,7 @@ import java.util.Map;
 
 /** Root of {@code config/mcai.json} (Gson-mapped; field names are the JSON keys). */
 public final class ModConfig {
-	public int configVersion = 1;
+	public int configVersion = ConfigIO.CONFIG_VERSION;
 	/** Active provider id (key of {@link #providers}). */
 	public String provider = ProviderPresets.DEFAULT_PROVIDER;
 	public Map<String, ProviderSettings> providers = new LinkedHashMap<>();
@@ -52,24 +52,46 @@ public final class ModConfig {
 		public boolean particles = true;
 		/** Recompute connecting shapes (fences, panes, stairs, walls) after placing. */
 		public boolean updateShapes = true;
+		/**
+		 * Builds whose nearest block is farther than this (horizontally, in blocks) from the requesting player are
+		 * refused; summons farther away are skipped.
+		 */
+		public int maxDistance = 160;
+		/**
+		 * Blocks scripts may never place (ids, {@code minecraft:} optional). Command, structure, jigsaw and test
+		 * blocks are always refused, whether listed or not.
+		 */
+		public List<String> deniedBlocks = new ArrayList<>(DEFAULT_DENIED_BLOCKS);
 	}
+
+	/** Default {@link Build#deniedBlocks}. */
+	public static final List<String> DEFAULT_DENIED_BLOCKS = List.of("command_block", "chain_command_block",
+			"repeating_command_block", "structure_block", "jigsaw", "spawner", "trial_spawner");
 
 	public static final class Commands {
 		public boolean enabled = true;
 		/** Permission level AI-issued commands run with (2 = game master; summon/give need it). */
 		public int permissionLevel = 2;
-		/** Allow @a/@e/@r/@n selectors in AI commands (@s and @p are always allowed). */
+		/**
+		 * Let AI commands target others: @a/@e/@r/@n and @p[...] selectors, player names and UUIDs, and tp of
+		 * anything but the requester. When false only @s and a bare @p are accepted.
+		 */
 		public boolean allowSelectors = false;
 		public int maxPerRequest = 32;
-		public List<String> whitelist = new ArrayList<>(List.of(
-				"summon", "give", "time", "weather", "effect", "particle", "playsound", "title", "tellraw",
-				"say", "xp", "experience", "enchant", "tp", "teleport"));
+		public List<String> whitelist = new ArrayList<>(DEFAULT_WHITELIST);
 	}
+
+	/** Default {@link Commands#whitelist}. {@code particle} (uncapped counts) and {@code say} (re-triggers the AI) are left out. */
+	public static final List<String> DEFAULT_WHITELIST = List.of("summon", "give", "time", "weather", "effect", "playsound",
+			"title", "tellraw", "xp", "experience", "enchant", "tp", "teleport");
 
 	public static final class Permissions {
 		/** Permission level needed to talk to the AI. */
 		public int useLevel = 0;
-		/** Permission level needed for /ai reload and /ai config. */
+		/**
+		 * Permission level needed for /ai reload and /ai config model. {@code /ai config provider|key|baseurl} always
+		 * need level 4 (server owner or console), because they can redirect requests and the API key.
+		 */
 		public int adminLevel = 2;
 	}
 }

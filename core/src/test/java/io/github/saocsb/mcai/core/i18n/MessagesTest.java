@@ -29,6 +29,7 @@ class MessagesTest {
 		put("build.progress", 4);
 		put("build.done", 3);
 		put("build.skipped", 1);
+		put("build.replace_missing", 0);
 		put("build.warning", 1);
 		put("build.confirm", 2);
 		put("build.confirm_none", 0);
@@ -39,7 +40,9 @@ class MessagesTest {
 		put("undo.start", 2);
 		put("undo.done", 1);
 		put("undo.nothing", 0);
+		put("undo.skipped", 1);
 		put("error.busy", 0);
+		put("error.too_far", 2);
 		put("error.cooldown", 1);
 		put("error.server_busy", 1);
 		put("error.no_api_key", 1);
@@ -58,6 +61,8 @@ class MessagesTest {
 		put("cmd.reload_failed", 1);
 		put("cmd.config_set", 2);
 		put("cmd.unknown_provider", 2);
+		put("cmd.config_unavailable", 0);
+		put("cmd.config_usage", 0);
 		put("cmd.status", 5);
 		put("cmd.help", 0);
 		put("actions.summary", 2);
@@ -188,6 +193,19 @@ class MessagesTest {
 					"/ai status", "/ai help", "/ai reload", "/ai config provider|model|key|baseurl"}) {
 				assertTrue(help.contains(part), lang + " help lacks " + part);
 			}
+		}
+	}
+
+	@Test
+	void safetyMessages() {
+		assertEquals("That build would be 300 blocks away from you; this server allows at most 160. Move closer and try again.",
+				Messages.tr("en_us", "error.too_far", 300, 160));
+		assertEquals("这个建造离你太远了（300 格），服务器最多允许 160 格。请走近一些再试。", Messages.tr("zh_cn", "error.too_far", 300, 160));
+		assertEquals("The config file failed to load, so settings can't be changed now. Fix mcai.json and run /ai reload.",
+				Messages.tr("en_us", "cmd.config_unavailable"));
+		for (String lang : new String[] {"zh_cn", "en_us"}) {
+			assertTrue(Messages.tr(lang, "cmd.config_usage").contains("/ai config provider|model|key|baseurl"), lang);
+			assertTrue(Messages.tr(lang, "undo.skipped", 7).contains("7"), lang);
 		}
 	}
 
