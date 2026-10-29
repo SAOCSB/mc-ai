@@ -18,8 +18,9 @@ import java.util.concurrent.CompletableFuture;
  * with {@link ProviderConfig#echoReasoningContent()} assistant messages carry {@code "reasoning_content": " "}.
  * Streaming parses SSE {@code data:} lines until {@code [DONE]} (or the end of the stream; a stream that ends
  * without {@code [DONE]} or a finish_reason is reported as truncated with stop reason
- * {@link LlmResponse#INCOMPLETE_STREAM}), accumulating {@code choices[0].delta.content}; {@code delta.reasoning_content} / {@code delta.reasoning} /
- * {@code delta.reasoning_details[].text} count as reasoning progress only. Visible text has
+ * {@link LlmResponse#INCOMPLETE_STREAM}), accumulating {@code choices[0].delta.content};
+ * {@code delta.reasoning_content} / {@code delta.reasoning} / {@code delta.reasoning_details[].text} count as
+ * reasoning progress only. Visible text has
  * {@code <think>...</think>} blocks removed (a leading one is routed to reasoning while streaming).
  * finish_reason "length" => truncated; "content_filter" or a {@code refusal} => refused (text = the refusal).
  *

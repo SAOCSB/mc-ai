@@ -88,8 +88,8 @@ import java.util.stream.IntStream;
  *     reply with neither chat text nor script, and a repair reply without a script, are errors too.</li>
  * <li>Refusals finish with failure {@link #FAILURE_REFUSED} and are recorded in the conversation like the
  *     other outcomes (without the failure note). A refused first reply is not delivered as chat and leaves the
- *     outcome's chat text empty. Failures of the script runner other than {@link ScriptException}, of the validator or of
- *     the executor complete the future exceptionally, without a conversation update.</li>
+ *     outcome's chat text empty. Failures of the script runner other than {@link ScriptException}, of the
+ *     validator or of the executor complete the future exceptionally, without a conversation update.</li>
  * <li>{@link AgentTask#cancel()} (or cancelling {@link AgentTask#future()}) cancels the in-flight LLM future,
  *     interrupts a running script, and completes the future with CancellationException. No listener callback
  *     starts after that, and the conversation is not changed.</li>
