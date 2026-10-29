@@ -10,7 +10,7 @@ public final class ScriptApi {
 	/** Every global function the script API defines. */
 	public static final List<String> FUNCTIONS = List.of(
 			"block", "fill", "hollow", "walls", "frame", "clear", "line", "sphere", "dome", "ellipsoid",
-			"cylinder", "cone", "pyramid", "torus", "polygon", "text", "replace", "get",
+			"cylinder", "cone", "pyramid", "torus", "polygon", "path", "text", "replace", "get",
 			"random", "randInt", "pick", "noise",
 			"placement", "setName",
 			"summon", "give", "time", "weather", "effect", "command", "wait",

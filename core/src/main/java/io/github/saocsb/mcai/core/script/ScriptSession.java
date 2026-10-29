@@ -66,6 +66,7 @@ final class ScriptSession {
 	private static final String[] P_PYRAMID = {"cx", "y", "cz", "half", "id"};
 	private static final String[] P_TORUS = {"cx", "cy", "cz", "R", "r", "id"};
 	private static final String[] P_POLYGON = {"points", "y", "height", "id"};
+	private static final String[] P_PATH = {"points", "id"};
 	private static final String[] P_TEXT = {"str", "x", "y", "z", "id"};
 	private static final String[] P_REPLACE = {"x1", "y1", "z1", "x2", "y2", "z2", "from", "to"};
 	private static final String[] P_GET = {"x", "y", "z"};
@@ -260,6 +261,7 @@ final class ScriptSession {
 		define(scope, "pyramid", 5, this::pyramid);
 		define(scope, "torus", 6, this::torus);
 		define(scope, "polygon", 4, this::polygon);
+		define(scope, "path", 2, this::path);
 		define(scope, "text", 5, this::text);
 		define(scope, "replace", 8, this::replace);
 		define(scope, "get", 3, this::get);
@@ -476,6 +478,53 @@ final class ScriptSession {
 		}
 		CountingSink sink = new CountingSink(false);
 		Shapes.polygon(sink, points, y, height, id, hollow);
+		return sink.count();
+	}
+
+	/** path(points, id, radius=0): consecutive [x, y, z] points (or {x, y, z} objects) joined by line(). */
+	private Object path(Object[] a) {
+		need(a, "path", P_PATH);
+		if (!(a[0] instanceof NativeArray array)) {
+			throw ScriptRuntime.typeError("path(): points must be an array of [x, y, z] triples or {x, y, z} objects");
+		}
+		long length = array.getLength();
+		if (length < 2) {
+			throw ScriptRuntime.typeError("path(): expected at least 2 points, got " + length);
+		}
+		if (length > MAX_POLYGON_POINTS) {
+			throw limit("path(): too many points (" + length + ", max " + MAX_POLYGON_POINTS + ")");
+		}
+		String id = blockId(a, 1, "path");
+		double radius = optNumber(a, 2, 0, "path", "radius");
+		checkRadius("path", "radius", radius);
+		int[] previous = null;
+		CountingSink sink = new CountingSink(true);
+		for (int i = 0; i < length; i++) {
+			Object p = ScriptableObject.getProperty(array, i);
+			Object x;
+			Object y;
+			Object z;
+			if (p instanceof NativeArray triple) {
+				if (triple.getLength() < 3) {
+					throw ScriptRuntime.typeError("path(): points[" + i + "] must be [x, y, z] or {x, y, z}");
+				}
+				x = ScriptableObject.getProperty(triple, 0);
+				y = ScriptableObject.getProperty(triple, 1);
+				z = ScriptableObject.getProperty(triple, 2);
+			} else if (p instanceof Scriptable obj && !(p instanceof Function)) {
+				x = ScriptableObject.getProperty(obj, "x");
+				y = ScriptableObject.getProperty(obj, "y");
+				z = ScriptableObject.getProperty(obj, "z");
+			} else {
+				throw ScriptRuntime.typeError("path(): points[" + i + "] must be [x, y, z] or {x, y, z}");
+			}
+			int[] point = {coordValue(x, "path", "points[" + i + "].x"), coordValue(y, "path", "points[" + i + "].y"),
+					coordValue(z, "path", "points[" + i + "].z")};
+			if (previous != null) {
+				Shapes.line(sink, previous[0], previous[1], previous[2], point[0], point[1], point[2], id, radius);
+			}
+			previous = point;
+		}
 		return sink.count();
 	}
 
@@ -778,9 +827,23 @@ final class ScriptSession {
 				throw ScriptRuntime.typeError("summon(): nbt must be an SNBT compound such as '{NoAI:1b}', got '"
 						+ clip(nbt, 60) + "'");
 			}
+			String legacy = legacyEntityKey(nbt);
+			if (legacy != null) {
+				throw ScriptRuntime.typeError("summon(): '" + legacy + "' is pre-1.21.5 NBT that Minecraft 26.3 ignores; use "
+						+ "equipment:{head:{id:\"minecraft:iron_helmet\",count:1},mainhand:{...}} (lowercase count)");
+			}
 		}
 		addAction("summon", new WorldAction.Summon(id, x, y, z, nbt));
 		return Undefined.instance;
+	}
+
+	private static final java.util.regex.Pattern LEGACY_ENTITY_KEY =
+			java.util.regex.Pattern.compile("\\b(ArmorItems|HandItems|ArmorDropChances|HandDropChances|Count)\\s*:");
+
+	/** The first legacy (pre-1.21.5) entity/item NBT key in {@code nbt}, or null. */
+	static String legacyEntityKey(String nbt) {
+		java.util.regex.Matcher m = LEGACY_ENTITY_KEY.matcher(nbt);
+		return m.find() ? m.group(1) : null;
 	}
 
 	private Object give(Object[] a) {
