@@ -4,8 +4,8 @@ package io.github.saocsb.mcai.core.agent;
 public interface AgentListener {
 	/**
 	 * The assistant's chat text from the FIRST reply of a request, delivered as soon as that reply has been
-	 * received and parsed (before the script runs). Not called when the text is empty. Replies to repair
-	 * prompts never produce chat.
+	 * received and parsed (before the script runs). Not called when the text is empty or the model refused the
+	 * request (the declined output is never shown). Replies to repair prompts never produce chat.
 	 */
 	void onChat(String text);
 

@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * Final result of a request.
  *
- * @param chatText chat text of the first reply ("" if none)
+ * @param chatText chat text of the first reply ("" if none, or if that reply was a refusal)
  * @param result   successful script result to build, or null (pure chat, or failure)
  * @param failure  user-facing reason when a script was attempted but could not be made to work
  *                 (last script error, invalid blocks, refusal, truncation), else null

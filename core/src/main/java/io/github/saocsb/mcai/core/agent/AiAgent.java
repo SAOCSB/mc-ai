@@ -36,8 +36,10 @@ import java.util.stream.IntStream;
  * <li>messages = conversation.view(maxHistory) + user turn ({@link PromptBuilder#userTurn}); call the LLM,
  *     forwarding progress as THINKING / WRITING_SCRIPT statuses (WRITING_SCRIPT once the partial text contains an
  *     opening code fence; throttled to 1/s).</li>
- * <li>Parse with {@link ResponseParser}. First reply: deliver non-empty chat text via {@code onChat}.</li>
- * <li>If refused: outcome with failure, no repair. If no script: outcome with result null and failure null.</li>
+ * <li>Parse with {@link ResponseParser}. First reply, unless refused: deliver non-empty chat text via
+ *     {@code onChat}.</li>
+ * <li>If refused: outcome with failure, no repair and no chat. If no script: outcome with result null and failure
+ *     null.</li>
  * <li>Run the script on {@code scriptExecutor} (status RUNNING_SCRIPT). Errors are: unterminated/truncated
  *     reply, {@link io.github.saocsb.mcai.core.script.ScriptException}, an empty blueprint with no world actions,
  *     or invalid palette entries from the validator that could not be auto-fixed (message lists each such id,
@@ -48,22 +50,28 @@ import java.util.stream.IntStream;
  *     player's message text, prefixed with "{playerName}: ", without the context block) and the final assistant
  *     reply: the last reply received, except after a success that needed repairs, where it is the first
  *     reply's chat text followed by the script that worked as a {@code ```js} block (so later turns see both
- *     what was said and what actually ran).</li>
+ *     what was said and what actually ran). After a final failure the reply is followed by
+ *     {@code "\n\n(Note: this script failed and nothing was built: <first line of the failure, max 200 chars>)"}
+ *     ({@link #failedReply}).</li>
  * </ol>
  *
  * <p>Invalid block ids (still on the script executor, after the validator rejected some palette entries):
  * <ol>
- * <li>Auto-fix: for each invalid id the candidates are {@link BlockFixer#candidates} followed by
- *     {@link BlockFixer#suggestionCandidates} of the validator's suggestions (same family, distance at most 2). All
- *     candidates are validated in one extra validator call; the first valid candidate per id replaces it in the
- *     blueprint ({@code replaceAll}) with the warning {@code "auto-fixed block 'x' -> 'y'"}.</li>
- * <li>Ids without a valid candidate go to the repair round-trip (the message lists only those). On the last
- *     attempt they are removed from the blueprint instead, with the warning
- *     {@code "removed N blocks with unknown id 'x'"} per id; the request then succeeds if a non-air block or a
- *     world action remains, and otherwise fails with the invalid-blocks message as before.</li>
+ * <li>Auto-fix, for the first {@value #MAX_FIXED_IDS} distinct invalid ids only (the others count as unfixed): the
+ *     candidates are {@link BlockFixer#candidates} followed by {@link BlockFixer#suggestionCandidates} of the
+ *     validator's suggestions (same family, distance at most 2). All candidates are validated in one extra validator
+ *     call; the first valid candidate per id replaces it in the blueprint ({@code replaceAll}) with the warning
+ *     {@code "auto-fixed block 'x' -> 'y'"}.</li>
+ * <li>Ids without a valid candidate go to the repair round-trip (the message lists only those, at most
+ *     {@value #MAX_LISTED_IDS}, then {@code "... and N more unknown ids"}). On the last attempt they are removed from
+ *     the blueprint instead, with the warning {@code "removed N blocks with unknown id 'x'"} per id; the request then
+ *     succeeds if a non-air block or a world action remains, and otherwise fails with the invalid-blocks message as
+ *     before.</li>
  * </ol>
  * Warnings name ids without the {@code minecraft:} namespace and are returned in
- * {@link AgentOutcome#warnings()} of successful outcomes (in the validator's order, fixes before removals).
+ * {@link AgentOutcome#warnings()} of successful outcomes (in the validator's order, fixes before removals; at most
+ * {@value #MAX_WARNINGS}, then {@code "... and N more"}). The check stops with CancellationException between steps
+ * when its thread is interrupted.
  *
  * <p>LLM exceptions complete the future exceptionally with the {@link io.github.saocsb.mcai.core.llm.LlmException}
  * (unwrapped from CompletionException); nothing is added to the conversation then.
@@ -79,7 +87,8 @@ import java.util.stream.IntStream;
  * <li>A truncated reply or an unclosed code fence only counts as an error when the reply has a script. A first
  *     reply with neither chat text nor script, and a repair reply without a script, are errors too.</li>
  * <li>Refusals finish with failure {@link #FAILURE_REFUSED} and are recorded in the conversation like the
- *     other outcomes. Failures of the script runner other than {@link ScriptException}, of the validator or of
+ *     other outcomes (without the failure note). A refused first reply is not delivered as chat and leaves the
+ *     outcome's chat text empty. Failures of the script runner other than {@link ScriptException}, of the validator or of
  *     the executor complete the future exceptionally, without a conversation update.</li>
  * <li>{@link AgentTask#cancel()} (or cancelling {@link AgentTask#future()}) cancels the in-flight LLM future,
  *     interrupts a running script, and completes the future with CancellationException. No listener callback
@@ -100,6 +109,14 @@ public final class AiAgent {
 	static final String INVALID_BLOCKS_HEADER = "Unknown or invalid block ids:";
 	static final long STATUS_INTERVAL_NANOS = 1_000_000_000L;
 	static final int SHORT_ERROR_LENGTH = 100;
+	/** Most distinct invalid ids auto-fixing looks at per attempt; the others count as unfixed. */
+	static final int MAX_FIXED_IDS = 32;
+	/** Most invalid ids listed in a repair message. */
+	static final int MAX_LISTED_IDS = 20;
+	/** Most warnings in an outcome, not counting the "... and N more" line. */
+	static final int MAX_WARNINGS = 10;
+	/** Longest error excerpt in the note stored after a failed request. */
+	static final int NOTE_ERROR_LENGTH = 200;
 
 	private static final System.Logger LOG = System.getLogger(AiAgent.class.getName());
 	private static final AgentListener NO_LISTENER = new AgentListener() {
@@ -194,25 +211,57 @@ public final class AiAgent {
 
 	/** First line of an error, cut to {@link #SHORT_ERROR_LENGTH} characters. */
 	static String shortError(String error) {
+		return firstLine(error, SHORT_ERROR_LENGTH);
+	}
+
+	/** First line of an error, cut to {@code max} characters (ending in "..." when cut). */
+	static String firstLine(String error, int max) {
 		String line = error == null ? "" : error.strip();
 		int nl = line.indexOf('\n');
 		if (nl >= 0) {
 			line = line.substring(0, nl).strip();
 		}
-		return line.length() <= SHORT_ERROR_LENGTH ? line : line.substring(0, SHORT_ERROR_LENGTH - 3) + "...";
+		return line.length() <= max ? line : line.substring(0, max - 3) + "...";
 	}
 
-	/** {@code "Unknown or invalid block ids:\n- <id>: <reason> (did you mean: a, b?)"}, one line per entry. */
+	/**
+	 * {@code "Unknown or invalid block ids:\n- <id>: <reason> (did you mean: a, b?)"}, one line for each of the first
+	 * {@link #MAX_LISTED_IDS} entries, then {@code "... and N more unknown ids"} for the rest.
+	 */
 	static String invalidBlocksMessage(List<InvalidBlock> invalid) {
 		StringBuilder sb = new StringBuilder(INVALID_BLOCKS_HEADER);
-		for (InvalidBlock b : invalid) {
+		int listed = Math.min(invalid.size(), MAX_LISTED_IDS);
+		for (InvalidBlock b : invalid.subList(0, listed)) {
 			String reason = b.reason() == null || b.reason().isBlank() ? "unknown block" : b.reason().strip();
 			sb.append("\n- ").append(b.blockId()).append(": ").append(reason);
 			if (b.suggestions() != null && !b.suggestions().isEmpty()) {
 				sb.append(" (did you mean: ").append(String.join(", ", b.suggestions())).append("?)");
 			}
 		}
+		if (invalid.size() > listed) {
+			sb.append("\n... and ").append(invalid.size() - listed).append(" more unknown ids");
+		}
 		return sb.toString();
+	}
+
+	/** The first {@link #MAX_WARNINGS} warnings, plus {@code "... and N more"} when there are more. */
+	static List<String> capWarnings(List<String> warnings) {
+		if (warnings.size() <= MAX_WARNINGS) {
+			return warnings;
+		}
+		List<String> capped = new ArrayList<>(warnings.subList(0, MAX_WARNINGS));
+		capped.add("... and " + (warnings.size() - MAX_WARNINGS) + " more");
+		return capped;
+	}
+
+	/**
+	 * The assistant message stored after a request failed for good: the reply, a blank line, then
+	 * {@code "(Note: this script failed and nothing was built: <first line of the error, max 200 chars>)"}, so later
+	 * turns do not assume the build exists.
+	 */
+	static String failedReply(String reply, String error) {
+		return nonBlank(reply) + "\n\n(Note: this script failed and nothing was built: "
+				+ firstLine(error, NOTE_ERROR_LENGTH) + ")";
 	}
 
 	/** {@code "auto-fixed block '<from>' -> '<to>'"} with ids shown by {@link #displayId}. */
@@ -256,6 +305,24 @@ public final class AiAgent {
 		} catch (IllegalArgumentException e) {
 			return id;
 		}
+	}
+
+	/** Stops the script check when its task was cancelled (the executor interrupts the thread). */
+	private static void checkInterrupted() {
+		if (Thread.currentThread().isInterrupted()) {
+			throw new CancellationException("script check cancelled");
+		}
+	}
+
+	/** Non-null entries, one per id (normalized), in report order. */
+	private static List<InvalidBlock> distinct(List<InvalidBlock> invalid) {
+		Map<String, InvalidBlock> byId = new LinkedHashMap<>();
+		for (InvalidBlock b : invalid) {
+			if (b != null) {
+				byId.putIfAbsent(normalizeOrSelf(b.blockId()), b);
+			}
+		}
+		return List.copyOf(byId.values());
 	}
 
 	private static Throwable unwrap(Throwable t) {
@@ -495,7 +562,7 @@ public final class AiAgent {
 			lastReply = text;
 			ParsedResponse parsed = ResponseParser.parse(text);
 			boolean first = attempts == 1;
-			if (first) {
+			if (first && !refused) {
 				firstChat = parsed.chatText();
 				if (!firstChat.isEmpty()) {
 					chat(firstChat);
@@ -565,22 +632,29 @@ public final class AiAgent {
 			if (palette == null || palette.isEmpty()) {
 				return new Check(result, null, null, List.of());
 			}
+			checkInterrupted();
 			List<InvalidBlock> invalid = validator.validate(palette);
+			checkInterrupted();
 			if (invalid == null || invalid.isEmpty()) {
 				return new Check(result, null, null, List.of());
 			}
+			List<InvalidBlock> distinct = distinct(invalid);
+			int tried = Math.min(distinct.size(), MAX_FIXED_IDS);
 			List<InvalidBlock> unfixed = new ArrayList<>();
-			Map<String, String> fixes = findFixes(invalid, unfixed);
+			Map<String, String> fixes = findFixes(distinct.subList(0, tried), unfixed);
+			unfixed.addAll(distinct.subList(tried, distinct.size()));
+			checkInterrupted();
 			boolean lastAttempt = attempts >= maxAttempts;
 			if (!unfixed.isEmpty() && !lastAttempt) {
 				return Check.failed(invalidBlocksMessage(unfixed));
 			}
 			List<String> warnings = new ArrayList<>();
-			fixes.forEach((from, to) -> {
-				if (inspector.replaceAll(result, from, to) > 0) {
-					warnings.add(autoFixedWarning(from, to));
+			for (Map.Entry<String, String> fix : fixes.entrySet()) {
+				if (inspector.replaceAll(result, fix.getKey(), fix.getValue()) > 0) {
+					warnings.add(autoFixedWarning(fix.getKey(), fix.getValue()));
 				}
-			});
+				checkInterrupted();
+			}
 			if (!unfixed.isEmpty()) {
 				Set<String> ids = new LinkedHashSet<>();
 				for (InvalidBlock b : unfixed) {
@@ -589,6 +663,7 @@ public final class AiAgent {
 					}
 				}
 				Map<String, Integer> removed = inspector.removeAll(result, ids);
+				checkInterrupted();
 				for (String id : ids) {
 					int count = removed == null ? 0 : removed.getOrDefault(id, 0);
 					if (count > 0) {
@@ -599,28 +674,28 @@ public final class AiAgent {
 					return Check.failed(invalidBlocksMessage(unfixed));
 				}
 			}
-			return new Check(result, null, null, warnings);
+			return new Check(result, null, null, capWarnings(warnings));
 		}
 
 		/**
 		 * The first valid auto-fix candidate per invalid id (normalized invalid id -> replacement, in report order),
 		 * found with one validator call over all candidates. Entries without a valid candidate go to {@code unfixed}.
+		 * The caller limits {@code invalid} to {@link #MAX_FIXED_IDS} distinct entries.
 		 */
 		private Map<String, String> findFixes(List<InvalidBlock> invalid, List<InvalidBlock> unfixed) {
 			Map<InvalidBlock, List<String>> options = new LinkedHashMap<>();
 			Set<String> all = new LinkedHashSet<>();
 			for (InvalidBlock b : invalid) {
-				if (b == null) {
-					continue;
-				}
 				String id = normalizeOrSelf(b.blockId());
 				Set<String> candidates = new LinkedHashSet<>(BlockFixer.candidates(id));
 				candidates.addAll(BlockFixer.suggestionCandidates(id, b.suggestions()));
+				candidates.removeIf(c -> c.length() > BlockIds.MAX_LENGTH);
 				options.put(b, List.copyOf(candidates));
 				all.addAll(candidates);
 			}
 			Set<String> rejected = new HashSet<>();
 			if (!all.isEmpty()) {
+				checkInterrupted();
 				List<InvalidBlock> bad = validator.validate(List.copyOf(all));
 				if (bad != null) {
 					for (InvalidBlock b : bad) {
@@ -696,7 +771,7 @@ public final class AiAgent {
 
 		private void onError(String error, String detail) {
 			if (attempts >= maxAttempts) {
-				finish(new AgentOutcome(firstChat, null, error, attempts, List.of()), nonBlank(lastReply));
+				finish(new AgentOutcome(firstChat, null, error, attempts, List.of()), failedReply(lastReply, error));
 				return;
 			}
 			int attempt = attempts + 1;

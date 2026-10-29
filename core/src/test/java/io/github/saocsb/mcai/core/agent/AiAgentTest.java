@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -288,7 +289,8 @@ class AiAgentTest {
 		assertEquals(List.of("a();", "b();", "c();"), runner.sources);
 		assertEquals(List.of("REPAIRING[2, 3, E1]", "REPAIRING[3, 3, E2]"),
 				listener.statuses(AgentStatus.REPAIRING).stream().map(Object::toString).toList());
-		assertEquals(List.of(ChatMessage.user("Steve: build"), ChatMessage.assistant("```js\nc();\n```")),
+		assertEquals(List.of(ChatMessage.user("Steve: build"), ChatMessage.assistant(
+				"```js\nc();\n```\n\n(Note: this script failed and nothing was built: E3: still broken)")),
 				conversation.messages());
 		List<ChatMessage> last = messagesOfCall(2);
 		assertEquals(5, last.size());
@@ -317,11 +319,13 @@ class AiAgentTest {
 
 		AgentOutcome outcome = await(agent().handle(request("something bad", 2)));
 
-		assertEquals(new AgentOutcome("I can't help with that.", null, AiAgent.FAILURE_REFUSED, 1), outcome);
+		// The declined output is not shown to the player.
+		assertEquals(new AgentOutcome("", null, AiAgent.FAILURE_REFUSED, 1), outcome);
 		assertEquals("refused", AiAgent.FAILURE_REFUSED);
 		assertEquals(1, llm.calls.size());
 		assertTrue(runner.sources.isEmpty());
-		assertEquals(List.of("I can't help with that."), listener.chats());
+		assertEquals(List.of(), listener.chats());
+		assertEquals(List.of("THINKING[0]"), events());
 		assertEquals(List.of(ChatMessage.user("Steve: something bad"), ChatMessage.assistant("I can't help with that.")),
 				conversation.messages());
 	}
@@ -333,7 +337,9 @@ class AiAgentTest {
 		AgentOutcome outcome = await(agent().handle(request("tower", 2)));
 
 		assertEquals(AiAgent.FAILURE_REFUSED, outcome.failure());
+		assertEquals("", outcome.chatText());
 		assertTrue(runner.sources.isEmpty());
+		assertTrue(listener.chats().isEmpty());
 	}
 
 	@Test
@@ -986,7 +992,8 @@ class AiAgentTest {
 		String error = AiAgent.invalidBlocksMessage(List.of(
 				new InvalidBlock("minecraft:fancy_pillar", "unknown block", List.of())));
 		assertEquals(new AgentOutcome("Sure, here is a tower!\nEnjoy!", null, error, 1, List.of()), outcome);
-		assertEquals(List.of(ChatMessage.user("Steve: tower"), ChatMessage.assistant(GOOD_REPLY)),
+		assertEquals(List.of(ChatMessage.user("Steve: tower"), ChatMessage.assistant(GOOD_REPLY
+				+ "\n\n(Note: this script failed and nothing was built: Unknown or invalid block ids:)")),
 				conversation.messages());
 	}
 
@@ -1090,5 +1097,147 @@ class AiAgentTest {
 		source.add("x");
 		assertEquals(List.of("w"), outcome.warnings());
 		assertThrows(UnsupportedOperationException.class, () -> outcome.warnings().add("y"));
+	}
+
+	// --- Limits on invalid ids, warnings and stored failures ---
+
+	private static String[] validBlocks(int count, String... more) {
+		List<String> ids = new ArrayList<>(IntStream.range(0, count).mapToObj(i -> "minecraft:block_" + i).toList());
+		ids.addAll(List.of(more));
+		return ids.toArray(String[]::new);
+	}
+
+	@Test
+	void autoFixLooksAtTheFirst32DistinctInvalidIds() throws Exception {
+		Blueprint first = new Blueprint(1000, 64);
+		for (int i = 0; i < 40; i++) {
+			first.set(i, 0, 0, "block_" + i + "[facing=up]");
+		}
+		llm.reply(GOOD_REPLY).reply(FIXED_REPLY);
+		runner.okBlueprint(first).ok("minecraft:oak_planks");
+		List<List<String>> validated = new CopyOnWriteArrayList<>();
+		BlockValidator registry = registry(validated, validBlocks(40, "minecraft:oak_planks"));
+		BlockValidator duplicating = ids -> {
+			List<InvalidBlock> bad = new ArrayList<>(registry.validate(ids));
+			bad.addAll(List.copyOf(bad));
+			return bad;
+		};
+
+		AgentOutcome outcome = await(agent().handle(request("blocks", 1, duplicating)));
+
+		assertEquals(2, outcome.attempts());
+		assertNotNull(outcome.result());
+		// One candidate (the id without its invalid state) for each of the first 32 distinct ids, in one call.
+		assertEquals(IntStream.range(0, 32).mapToObj(i -> "minecraft:block_" + i).toList(), validated.get(1));
+		String repair = messagesOfCall(1).get(2).content();
+		for (int i = 32; i < 40; i++) {
+			assertTrue(repair.contains("\n- minecraft:block_" + i + "[facing=up]: unknown block"), repair);
+		}
+		assertFalse(repair.contains("block_31[facing=up]"), repair);
+		assertEquals(1, repair.split("block_35\\[facing=up]", -1).length - 1, "listed once");
+		assertFalse(repair.contains("more unknown ids"), repair);
+	}
+
+	@Test
+	void repairMessageListsAtMost20Ids() throws Exception {
+		Blueprint first = new Blueprint(1000, 64);
+		for (int i = 0; i < 50; i++) {
+			first.set(i, 0, 0, "mymod:fancy_" + i);
+		}
+		llm.reply(GOOD_REPLY).reply(FIXED_REPLY);
+		runner.okBlueprint(first).ok("minecraft:oak_planks");
+
+		await(agent().handle(request("blocks", 1, registry(new CopyOnWriteArrayList<>(), "minecraft:oak_planks"))));
+
+		String repair = messagesOfCall(1).get(2).content();
+		for (int i = 0; i < 20; i++) {
+			assertTrue(repair.contains("\n- mymod:fancy_" + i + ": unknown block\n"), repair);
+		}
+		assertFalse(repair.contains("mymod:fancy_20:"), repair);
+		assertTrue(repair.contains("\n- mymod:fancy_19: unknown block\n... and 30 more unknown ids"), repair);
+	}
+
+	@Test
+	void invalidBlocksMessageIsCappedAt20Ids() {
+		List<InvalidBlock> invalid = IntStream.range(0, 23)
+				.mapToObj(i -> new InvalidBlock("minecraft:x" + i, "unknown block", List.of())).toList();
+		String message = AiAgent.invalidBlocksMessage(invalid);
+		assertEquals(1 + 20 + 1, message.split("\n").length);
+		assertTrue(message.endsWith("\n- minecraft:x19: unknown block\n... and 3 more unknown ids"), message);
+		assertFalse(AiAgent.invalidBlocksMessage(invalid.subList(0, 20)).contains("more"));
+	}
+
+	@Test
+	void warningsAreCappedAt10() throws Exception {
+		Blueprint blueprint = new Blueprint(1000, 64);
+		for (int i = 0; i < 15; i++) {
+			blueprint.set(i, 0, 0, "block_" + i + "[facing=up]");
+		}
+		for (int i = 0; i < 5; i++) {
+			blueprint.set(i, 1, 0, "mymod:fancy_" + i);
+		}
+		blueprint.set(0, 2, 0, "stone");
+		llm.reply(GOOD_REPLY);
+		runner.okBlueprint(blueprint);
+
+		AgentOutcome outcome = await(agent().handle(request("blocks", 0,
+				registry(new CopyOnWriteArrayList<>(), validBlocks(15, "minecraft:stone")))));
+
+		assertNull(outcome.failure());
+		List<String> expected = new ArrayList<>(IntStream.range(0, 10)
+				.mapToObj(i -> "auto-fixed block 'block_" + i + "[facing=up]' -> 'block_" + i + "'").toList());
+		expected.add("... and 10 more");
+		assertEquals(expected, outcome.warnings());
+		assertEquals("minecraft:block_14", blueprint.get(14, 0, 0));
+		assertNull(blueprint.get(4, 1, 0));
+		assertEquals(List.of("a", "b"), AiAgent.capWarnings(List.of("a", "b")));
+	}
+
+	@Test
+	void interruptedCheckStopsBetweenSteps() throws Exception {
+		pool = Executors.newSingleThreadExecutor();
+		Blueprint blueprint = new Blueprint(1000, 64);
+		blueprint.set(0, 0, 0, "stone_brick");
+		llm.reply(GOOD_REPLY);
+		runner.okBlueprint(blueprint);
+		AtomicInteger calls = new AtomicInteger();
+		BlockValidator validator = ids -> {
+			calls.incrementAndGet();
+			Thread.currentThread().interrupt();
+			return List.of(new InvalidBlock("minecraft:stone_brick", "unknown block", List.of("minecraft:stone_bricks")));
+		};
+
+		AgentTask task = agent(pool).handle(request("wall", 2, validator));
+
+		assertThrows(CancellationException.class, () -> task.future().get(5, TimeUnit.SECONDS));
+		assertEquals(1, calls.get(), "no candidate validation after the interrupt");
+		assertEquals("minecraft:stone_brick", blueprint.get(0, 0, 0));
+		assertEquals(1, llm.calls.size());
+		assertEquals(0, conversation.size());
+	}
+
+	@Test
+	void failedReplyNoteFormat() {
+		assertEquals("Here!\n\n(Note: this script failed and nothing was built: TypeError: x is not a function)",
+				AiAgent.failedReply("Here!", "TypeError: x is not a function\n  more detail"));
+		assertEquals("(empty reply)\n\n(Note: this script failed and nothing was built: E)", AiAgent.failedReply(" ", "E"));
+		String note = AiAgent.failedReply("r", "E".repeat(500));
+		assertEquals("r\n\n(Note: this script failed and nothing was built: " + "E".repeat(197) + "...)", note);
+	}
+
+	@Test
+	void laterTurnsSeeThatTheFailedScriptBuiltNothing() throws Exception {
+		llm.reply(GOOD_REPLY).reply("Okay.");
+		runner.error("ReferenceError: \"foo\" is not defined. (line 1: foo();)");
+
+		AgentOutcome outcome = await(agent().handle(request("tower", 0)));
+		await(agent().handle(request("did it work?", 0)));
+
+		assertNotNull(outcome.failure());
+		ChatMessage stored = messagesOfCall(1).get(1);
+		assertEquals(ChatMessage.assistant(GOOD_REPLY + "\n\n(Note: this script failed and nothing was built: "
+				+ "ReferenceError: \"foo\" is not defined. (line 1: foo();))"), stored);
+		assertEquals("Sure, here is a tower!\nEnjoy!\n\n(Note: this script failed and nothing was built: "
+				+ "ReferenceError: \"foo\" is not defined. (line 1: foo();))", ResponseParser.parse(stored.content()).chatText());
 	}
 }
