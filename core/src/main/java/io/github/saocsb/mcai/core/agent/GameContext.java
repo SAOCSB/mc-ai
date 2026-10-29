@@ -11,17 +11,18 @@ package io.github.saocsb.mcai.core.agent;
  * @param maxBuildY  highest buildable world Y (inclusive)
  * @param maxBlocks  block budget for one build
  * @param otherPlayers names of other online players (may be empty)
+ * @param difficulty   "peaceful", "easy", "normal" or "hard"
  */
 public record GameContext(String playerName, String dimension, String biome, int x, int y, int z, String facing,
 		long dayTime, String weather, String gameMode, String heldItem, int groundY, int minBuildY, int maxBuildY,
-		int maxBlocks, java.util.List<String> otherPlayers) {
+		int maxBlocks, java.util.List<String> otherPlayers, String difficulty) {
 
 	/**
 	 * Compact multi-line text block for the prompt, e.g.
 	 * <pre>
 	 * [game context]
 	 * player: Steve (survival) at x=120 y=64 z=-30, facing north, holding minecraft:diamond_sword
-	 * world: minecraft:overworld, biome minecraft:plains, time 6000 (noon), weather clear
+	 * world: minecraft:overworld, biome minecraft:plains, time 6000 (noon), weather clear, difficulty normal
 	 * build space: local y=0 is world y=64; you can use local y from -128 to 256; max 300000 blocks
 	 * other players online: Alex, Bob
 	 * [/game context]
@@ -37,7 +38,11 @@ public record GameContext(String playerName, String dimension, String biome, int
 				.append(" y=").append(y).append(" z=").append(z).append(", facing ").append(facing)
 				.append(", holding ").append(heldItem).append('\n');
 		sb.append("world: ").append(dimension).append(", biome ").append(biome).append(", time ").append(time)
-				.append(" (").append(timeLabel(time)).append("), weather ").append(weather).append('\n');
+				.append(" (").append(timeLabel(time)).append("), weather ").append(weather);
+		if (difficulty != null && !difficulty.isBlank()) {
+			sb.append(", difficulty ").append(difficulty);
+		}
+		sb.append('\n');
 		sb.append("build space: local y=0 is world y=").append(groundY).append("; you can use local y from ")
 				.append(minBuildY - groundY).append(" to ").append(maxBuildY - groundY).append("; max ")
 				.append(maxBlocks).append(" blocks\n");

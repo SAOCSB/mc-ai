@@ -61,7 +61,7 @@ class AiAgentTest {
 
 	static GameContext context() {
 		return new GameContext("Steve", "minecraft:overworld", "minecraft:plains", 120, 64, -30, "north", 6000, "clear",
-				"survival", "minecraft:diamond_sword", 64, -64, 319, 300000, List.of("Alex"));
+				"survival", "minecraft:diamond_sword", 64, -64, 319, 300000, List.of("Alex"), "normal");
 	}
 
 	private AiAgent agent(Executor executor) {

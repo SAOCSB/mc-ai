@@ -28,4 +28,8 @@ public sealed interface WorldAction {
 	/** A raw vanilla command without the leading slash, run as the requesting player. */
 	record Command(String command) implements WorldAction {
 	}
+
+	/** Pauses the action list: the actions after it run {@code seconds} later (e.g. a grace period before mobs spawn). */
+	record Wait(double seconds) implements WorldAction {
+	}
 }

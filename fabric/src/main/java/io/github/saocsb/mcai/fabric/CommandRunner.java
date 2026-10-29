@@ -150,6 +150,7 @@ public final class CommandRunner {
 			case WorldAction.Effect e -> "effect give @s " + lowerId(e.effectId()) + " " + clamp(e.seconds(), 1, 1_000_000)
 					+ " " + clamp(e.amplifier(), 0, 255);
 			case WorldAction.Command c -> stripSlash(c.command() == null ? "" : c.command());
+			case WorldAction.Wait w -> "";
 		};
 	}
 
@@ -163,6 +164,7 @@ public final class CommandRunner {
 			case WorldAction.SetWeather w -> WEATHER_WORDS.contains(lower(w.value()));
 			case WorldAction.Effect e -> ID.matcher(lowerId(e.effectId())).matches();
 			case WorldAction.Command c -> c.command() != null && !stripSlash(c.command()).isEmpty();
+			case WorldAction.Wait w -> w.seconds() >= 0;
 		};
 	}
 

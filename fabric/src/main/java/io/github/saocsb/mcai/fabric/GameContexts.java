@@ -35,7 +35,7 @@ public final class GameContexts {
 		}
 		return new GameContext(player.getName().getString(), dimension, biome, pos.getX(), pos.getY(), pos.getZ(),
 				Facing.fromYaw(player.getYRot()).lowerName(), dayTime, weather, gameMode, heldItem, groundY(player),
-				level.getMinY(), level.getMaxY(), maxBlocks, List.copyOf(others));
+				level.getMinY(), level.getMaxY(), maxBlocks, List.copyOf(others), level.getDifficulty().getSerializedName());
 	}
 
 	/**
