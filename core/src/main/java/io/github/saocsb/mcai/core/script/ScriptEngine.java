@@ -57,16 +57,10 @@ import java.util.function.Consumer;
  */
 public final class ScriptEngine implements ScriptRunner {
 	/**
-	 * Every global function the script API defines. Tests keep the prompt in sync with it, and the response parser
-	 * uses it to recognise untagged code blocks that are scripts.
+	 * Every global function the script API defines ({@link ScriptApi#FUNCTIONS}). Tests keep the prompt in sync with
+	 * it, and the response parser uses it to recognise untagged code blocks that are scripts.
 	 */
-	public static final List<String> API_FUNCTIONS = List.of(
-			"block", "fill", "hollow", "walls", "frame", "clear", "line", "sphere", "dome", "ellipsoid",
-			"cylinder", "cone", "pyramid", "torus", "polygon", "text", "replace", "get",
-			"random", "randInt", "pick", "noise",
-			"placement", "setName",
-			"summon", "give", "time", "weather", "effect", "command", "wait",
-			"log", "print");
+	public static final List<String> API_FUNCTIONS = ScriptApi.FUNCTIONS;
 
 	/** Source name given to the compiled script; stack frames with this name belong to the user's script. */
 	static final String SOURCE_NAME = "script";

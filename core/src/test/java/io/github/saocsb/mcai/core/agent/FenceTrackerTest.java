@@ -32,6 +32,17 @@ class FenceTrackerTest {
 	}
 
 	@Test
+	void fencesAfterTextAndIndentedFencesCount() {
+		FenceTracker t = new FenceTracker();
+		assertEquals(-1, t.update("Sure! Here: ```js"));
+		assertEquals(1, t.update("Sure! Here: ```js\nfill();\n"));
+		assertEquals(2, t.update("Sure! Here: ```js\nfill();\nblock();\n      ```\nchat\n"));
+		FenceTracker indented = new FenceTracker();
+		assertEquals(1, indented.update("        ```js\n        fill();\n"));
+		assertEquals(-1, new FenceTracker().update("Use ```fill()``` here\nmore\n"));
+	}
+
+	@Test
 	void crlfAndReset() {
 		FenceTracker t = new FenceTracker();
 		assertEquals(2, t.update("```js\r\na();\r\nb();\r\n"));

@@ -2,7 +2,8 @@ package io.github.saocsb.mcai.core.agent;
 
 /**
  * Follows a growing (streamed) reply and counts the lines written inside script code blocks, scanning each
- * complete line only once. Not thread-safe.
+ * complete line only once. Untagged blocks count too: whether they are scripts is only known once they are
+ * complete. Not thread-safe.
  */
 final class FenceTracker {
 	private int pos;
@@ -38,7 +39,7 @@ final class FenceTracker {
 			return -1;
 		}
 		int pending = 0;
-		if (open != null && open.script() && pos < partial.length()) {
+		if (open != null && open.maybeScript() && pos < partial.length()) {
 			String tail = partial.substring(pos).strip();
 			if (!tail.isEmpty() && tail.charAt(0) != open.ch()) {
 				pending = 1;
@@ -52,11 +53,11 @@ final class FenceTracker {
 			ResponseParser.Fence fence = ResponseParser.openingFence(line);
 			if (fence != null) {
 				open = fence;
-				seen |= fence.script();
+				seen |= fence.maybeScript();
 			}
 		} else if (ResponseParser.closesFence(open, line)) {
 			open = null;
-		} else if (open.script()) {
+		} else if (open.maybeScript()) {
 			lines++;
 		}
 	}

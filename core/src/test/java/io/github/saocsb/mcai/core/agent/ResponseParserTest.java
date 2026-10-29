@@ -44,9 +44,49 @@ class ResponseParserTest {
 	@ValueSource(strings = {"js", "javascript", "JS", "JavaScript", "mcai", "build", "", "js title=\"tower.js\"",
 			"javascript {.numberLines}", " js"})
 	void scriptLanguageTags(String tag) {
-		ParsedResponse p = parse("Here:\n```" + tag + "\nbuild();\n```\nDone");
-		assertEquals("build();", p.script());
+		ParsedResponse p = parse("Here:\n```" + tag + "\nfill(0, 0, 0, 1, 1, 1, 'stone');\n```\nDone");
+		assertEquals("fill(0, 0, 0, 1, 1, 1, 'stone');", p.script());
 		assertEquals("Here:\nDone", p.chatText());
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"js", "javascript", "mcai", "build"})
+	void taggedBlocksRunEvenWithoutApiCalls(String tag) {
+		assertEquals("const x = 1;", parse("```" + tag + "\nconst x = 1;\n```").script());
+	}
+
+	@Test
+	void untaggedBlocksAreScriptOnlyWhenTheyCallTheApi() {
+		ParsedResponse p = parse("Here:\n```\nconst h = 3;\nblock (0, 0, 0, 'stone');\n```\nDone");
+		assertEquals("const h = 3;\nblock (0, 0, 0, 'stone');", p.script());
+		assertEquals("Here:\nDone", p.chatText());
+		assertEquals("wait\t(5);", parse("~~~\nwait\t(5);\n~~~").script());
+		assertEquals("for (const x of xs) sphere(x, 0, 0, 2, 'glass');",
+				parse("```\nfor (const x of xs) sphere(x, 0, 0, 2, 'glass');\n```").script());
+	}
+
+	@Test
+	void untaggedBlocksWithoutApiCallsAreDroppedAndNotRun() {
+		ParsedResponse p = parse("Try this command:\n```\n/give @s diamond 64\n```\nHave fun!");
+		assertNull(p.script());
+		assertEquals("Try this command:\nHave fun!", p.chatText());
+		assertFalse(p.unterminatedCode());
+		// whole words only: refill( and myblock( are not API calls, and a name needs its parenthesis
+		assertNull(parse("```\nrefill(1);\nmyblock (2);\nblock_size = 3;\nfill\n```").script());
+		assertNull(parse("```\nThe castle has four towers.\n```").script());
+		ParsedResponse open = parse("Poem:\n```\nRoses are red");
+		assertNull(open.script());
+		assertTrue(open.unterminatedCode());
+		assertEquals("Poem:", open.chatText());
+		ParsedResponse partial = parse("```\nfill(0, 0, 0,");
+		assertEquals("fill(0, 0, 0,", partial.script());
+		assertTrue(partial.unterminatedCode());
+	}
+
+	@Test
+	void untaggedScriptsJoinTaggedOnes() {
+		assertEquals("a();\nblock(0, 0, 0, 'stone');",
+				parse("```js\na();\n```\n```\nblock(0, 0, 0, 'stone');\n```\n```\nnot code\n```").script());
 	}
 
 	@ParameterizedTest
@@ -100,10 +140,58 @@ class ResponseParserTest {
 	}
 
 	@Test
-	void fourSpacesIsNotAFence() {
-		ParsedResponse p = parse("    ```js\n    x();\n    ```");
+	void fencesMayBeIndentedByAnyAmount() {
+		ParsedResponse p = parse("    ```js\n    x();\n      y();\n    ```");
+		assertEquals("x();\n  y();", p.script());
+		assertFalse(p.unterminatedCode());
+		assertEquals("fill();\n\tinner();", parse("Steps:\n\t\t```js\n\t\tfill();\n\t\t\tinner();\n\t\t```").script());
+		assertEquals("a();", parse("            ~~~javascript\n            a();\n            ~~~").script());
+	}
+
+	@Test
+	void closingFenceMayBeIndented() {
+		ParsedResponse p = parse("```js\nx();\n      ```\nafter");
+		assertEquals("x();", p.script());
+		assertEquals("after", p.chatText());
+		assertFalse(p.unterminatedCode());
+		assertEquals("x();", parse("```js\nx();\n\t```").script());
+	}
+
+	@Test
+	void fenceMayOpenAfterTextOnTheSameLine() {
+		ParsedResponse p = parse("Here you go: ```js\nfill(0, 0, 0, 1, 1, 1, 'stone');\n```\nEnjoy!");
+		assertEquals("fill(0, 0, 0, 1, 1, 1, 'stone');", p.script());
+		assertEquals("Here you go:\nEnjoy!", p.chatText());
+		assertFalse(p.unterminatedCode());
+		// untagged and closed by an indented fence
+		ParsedResponse untagged = parse("Sure:```\nblock(0, 0, 0, 'stone');\n  ```");
+		assertEquals("block(0, 0, 0, 'stone');", untagged.script());
+		assertEquals("Sure:", untagged.chatText());
+		// a longer run; the rest of the line is the info string
+		assertEquals("a();", parse("Code: ````JavaScript title=\"x\"\na();\n````").script());
+		assertNull(parse("Data: ```json\n{}\n```").script());
+		assertEquals("Data:", parse("Data: ```json\n{}\n```").chatText());
+	}
+
+	@Test
+	void inlineCodeSpansAreNotFences() {
+		ParsedResponse p = parse("Use ```fill()``` to build walls.\nMore text");
 		assertNull(p.script());
 		assertFalse(p.unterminatedCode());
+		assertEquals("Use ```fill()``` to build walls.\nMore text", p.chatText());
+		assertNull(ResponseParser.openingFence("Type `/ai undo` or ``x`` here"));
+		assertNull(ResponseParser.openingFence("Half ``` and `x` and ```` here"));
+		// after code spans on the same line, an unclosed run can still open a fence
+		ResponseParser.Fence f = ResponseParser.openingFence("Call `fill()`: ```js");
+		assertEquals(new ResponseParser.Fence('`', 3, 0, "js", "Call `fill()`: "), f);
+	}
+
+	@Test
+	void tildesAfterTextAreNotAFence() {
+		ParsedResponse p = parse("好的~~~\n我们开始吧~~~ yay");
+		assertNull(p.script());
+		assertFalse(p.unterminatedCode());
+		assertEquals("好的~~~\n我们开始吧~~~ yay", p.chatText());
 	}
 
 	@Test
@@ -161,6 +249,19 @@ class ResponseParserTest {
 	}
 
 	@Test
+	void orphanClosingThinkKeepsTextWithCode() {
+		ParsedResponse p = parse("Here is the tower:\n```js\nfill(0, 0, 0, 1, 1, 1, 'stone');\n```\n</think>\nDone");
+		assertEquals("fill(0, 0, 0, 1, 1, 1, 'stone');", p.script());
+		assertEquals("Here is the tower:\n\nDone", p.chatText());
+		assertEquals("Built:\nok", parse("Built: ```js\nblock(0, 0, 0, 'stone');\n```\nok</thinking>").chatText());
+		// without code before it, the text before the tag is reasoning
+		ParsedResponse reasoning = parse("I should use stone.</think>\nHere:\n```js\nfill();\n```");
+		assertEquals("Here:", reasoning.chatText());
+		assertEquals("fill();", reasoning.script());
+		assertEquals("A\nB", parse("plan</think>\nA\n</think>B").chatText());
+	}
+
+	@Test
 	void inlineCodeIsKept() {
 		assertEquals("Use `fill()` and `**kwargs` or `__init__`, ok?", parse("Use `fill()` and `**kwargs` or `__init__`, ok?").chatText());
 	}
@@ -174,6 +275,13 @@ class ResponseParserTest {
 	@Test
 	void emphasisSpanningInlineCode() {
 		assertEquals("Use `fill` for walls", parse("**Use `fill` for walls**").chatText());
+	}
+
+	@Test
+	void privateUseCharactersInTheReplyDoNotCollideWithCodeSpanMasks() {
+		assertEquals("a 0 b `c`", parse("a 0 **b** `c`").chatText());
+		assertEquals("9 x `y` ", parse("9 **x** `y` ").chatText());
+		assertEquals("``  bold `**`", parse("``  **bold** `**`").chatText());
 	}
 
 	@Test
@@ -200,7 +308,10 @@ class ResponseParserTest {
 	void hasCodeBlock() {
 		assertTrue(ResponseParser.hasCodeBlock("a\n```js\nx\n```"));
 		assertTrue(ResponseParser.hasCodeBlock("~~~\nx"));
+		assertTrue(ResponseParser.hasCodeBlock("Here you go: ```js\nx"));
+		assertTrue(ResponseParser.hasCodeBlock("        ```\nx"));
 		assertFalse(ResponseParser.hasCodeBlock("inline `code` only"));
+		assertFalse(ResponseParser.hasCodeBlock("inline ```code``` only"));
 		assertFalse(ResponseParser.hasCodeBlock(null));
 	}
 
@@ -210,14 +321,22 @@ class ResponseParserTest {
 				ResponseParser.replaceCodeBlocks("Hi\n```js\na();\n```\nmid\n```json\n{}\n```\nend", "[code]"));
 		assertEquals("Hi\n[code]", ResponseParser.replaceCodeBlocks("Hi\n```js\na();\nb(", "[code]"));
 		assertEquals("no code", ResponseParser.replaceCodeBlocks("no code", "[code]"));
+		assertEquals("Here you go:\n[code]\nbye", ResponseParser.replaceCodeBlocks("Here you go: ```js\na();\n   ```\nbye", "[code]"));
 	}
 
 	@Test
 	void openingFenceDetails() {
 		ResponseParser.Fence f = ResponseParser.openingFence("  ````JavaScript title");
-		assertEquals(new ResponseParser.Fence('`', 4, 2, "javascript", true), f);
+		assertEquals(new ResponseParser.Fence('`', 4, 2, "javascript", ""), f);
+		assertTrue(f.script());
 		assertNull(ResponseParser.openingFence("``"));
 		assertNull(ResponseParser.openingFence(""));
+		assertNull(ResponseParser.openingFence("   \t "));
 		assertFalse(ResponseParser.openingFence("~~~text").script());
+		ResponseParser.Fence untagged = ResponseParser.openingFence("\t~~~");
+		assertEquals(new ResponseParser.Fence('~', 3, 1, "", ""), untagged);
+		assertFalse(untagged.script());
+		assertTrue(untagged.maybeScript());
+		assertFalse(ResponseParser.openingFence("```json").maybeScript());
 	}
 }
