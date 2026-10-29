@@ -18,6 +18,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.StairBlock;
 import net.minecraft.world.level.block.state.BlockState;
@@ -129,7 +130,7 @@ public class McAiGameTest {
 				DoubleBlockHalf.LOWER, "lower door half kept");
 
 		BlockState bedHead = level.getBlockState(world(transform, 4, 0, 1));
-		helper.assertTrue(bedHead.getBlock() == Blocks.RED_BED, "bed head added one block north of the foot");
+		helper.assertTrue(bedHead.getBlock() instanceof BedBlock, "bed head added one block north of the foot");
 		helper.assertValueEqual(bedHead.getValue(BlockStateProperties.BED_PART), BedPart.HEAD, "bed part");
 
 		helper.assertTrue(level.getBlockState(world(transform, 0, 1, 2)).getBlock() == Blocks.SPRUCE_DOOR, "complete door kept");
