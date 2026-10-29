@@ -189,6 +189,21 @@ class BlueprintRendererTest {
 	}
 
 	@Test
+	void cliWritesUtf8WhateverThePlatformCharset() throws Exception {
+		assertEquals(StandardCharsets.UTF_8, PreviewMain.stdout().charset());
+		Path script = Files.createTempFile("build", ".js");
+		Files.writeString(script, "setName('城堡 ♥ Burg');\nblock(0, 0, 0, 'stone');\n", StandardCharsets.UTF_8);
+		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+		PrintStream out = PreviewMain.utf8(bytes);
+		int code = PreviewMain.run(new String[] {script.toString(), OUT.resolve("utf8.png").toString()}, out, out);
+		out.flush();
+		String json = bytes.toString(StandardCharsets.UTF_8);
+		assertEquals(PreviewMain.EXIT_OK, code, json);
+		assertTrue(json.contains("\"name\": \"城堡 ♥ Burg\""), json);
+		Files.deleteIfExists(script);
+	}
+
+	@Test
 	void cliReportsMissingScriptInReply() throws Exception {
 		Path reply = Files.createTempFile("reply", ".md");
 		Files.writeString(reply, "Sorry, I can't build that.\n```json\n{}\n```\n");

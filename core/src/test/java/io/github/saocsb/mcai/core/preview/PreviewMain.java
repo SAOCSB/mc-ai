@@ -16,7 +16,11 @@ import io.github.saocsb.mcai.core.script.ScriptResult;
 import io.github.saocsb.mcai.core.script.WorldAction;
 
 import java.awt.image.BufferedImage;
+import java.io.BufferedOutputStream;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -56,9 +60,20 @@ public final class PreviewMain {
 
 	public static void main(String[] args) {
 		System.setProperty("java.awt.headless", "true");
-		int code = run(args, System.out, System.err);
-		System.out.flush();
+		PrintStream out = stdout();
+		int code = run(args, out, System.err);
+		out.flush();
 		System.exit(code);
+	}
+
+	/** Standard output as UTF-8 whatever the platform's default charset is, so the JSON summary stays readable. */
+	static PrintStream stdout() {
+		return utf8(new FileOutputStream(FileDescriptor.out));
+	}
+
+	/** A UTF-8 print stream over {@code stream}. */
+	static PrintStream utf8(OutputStream stream) {
+		return new PrintStream(new BufferedOutputStream(stream), true, StandardCharsets.UTF_8);
 	}
 
 	/** Runs the CLI and returns the exit code (testable without System.exit). */
