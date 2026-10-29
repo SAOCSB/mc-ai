@@ -78,6 +78,24 @@ class BlockIdsTest {
 	}
 
 	@Test
+	void idsLongerThan4096CharactersAreRejected() {
+		String longest = "mymod:" + "a".repeat(BlockIds.MAX_LENGTH - 6);
+		assertEquals(4096, BlockIds.MAX_LENGTH);
+		assertEquals(longest, BlockIds.normalize(longest));
+		IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> BlockIds.normalize(longest + "a"));
+		assertEquals("block id is too long (4097 characters, limit 4096)", e.getMessage());
+		assertThrows(IllegalArgumentException.class, () -> BlockIds.normalize("stone{a:\"" + "x".repeat(100_000) + "\"}"));
+		// without a namespace the input fits but the normalized id (with "minecraft:") would not
+		String path = "a".repeat(BlockIds.MAX_LENGTH - 5);
+		e = assertThrows(IllegalArgumentException.class, () -> BlockIds.normalize(path));
+		assertEquals("block id is too long (4101 characters, limit 4096)", e.getMessage());
+		// so every normalized id can be normalized again
+		String fits = "a".repeat(BlockIds.MAX_LENGTH - 10);
+		assertEquals(BlockIds.normalize(fits), BlockIds.normalize(BlockIds.normalize(fits)));
+		assertFalse(BlockIds.isAir("air" + " ".repeat(5000)));
+	}
+
+	@Test
 	void malformedMessageNamesTheInput() {
 		IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> BlockIds.normalize("stone[facing=north"));
 		assertTrue(e.getMessage().contains("stone[facing=north"), e.getMessage());

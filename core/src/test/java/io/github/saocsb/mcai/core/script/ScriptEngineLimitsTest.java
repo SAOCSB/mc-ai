@@ -203,6 +203,16 @@ class ScriptEngineLimitsTest {
 		}
 
 		@Test
+		void tooManyDifferentBlockIds() {
+			ScriptException e = failure(ScriptException.Kind.LIMIT,
+					"for (let i = 0; i < 5000; i++)\n  block(0, 0, 0, 'stone_bricks[variant=' + i + ']');");
+			assertEquals("LimitError: too many different block ids (limit 4096) (line 2: block(0, 0, 0, 'stone_bricks[variant=' + i + ']');)",
+					e.getMessage());
+			assertTrue(failure(ScriptException.Kind.RUNTIME, "block(0, 0, 0, 'mymod:' + 'a'.repeat(5000))").getMessage()
+					.startsWith("TypeError: block(): invalid block id (5006 characters long)"));
+		}
+
+		@Test
 		void spanLimit() {
 			ScriptLimits l = limits(10_000, 50, 5000, 5, 100, 50);
 			ScriptException e = failure(ScriptException.Kind.LIMIT, "block(0, 0, 0, 'stone');\nblock(60, 0, 0, 'stone');", l);

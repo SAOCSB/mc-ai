@@ -7,6 +7,9 @@ package io.github.saocsb.mcai.core.blueprint;
  * {@code minecraft:chest[facing=south]{Items:[...]}}.
  */
 public final class BlockIds {
+	/** Longest block string {@link #normalize} accepts, before and after normalizing. */
+	public static final int MAX_LENGTH = 4096;
+
 	private static final String MINECRAFT = "minecraft:";
 
 	private BlockIds() {
@@ -23,13 +26,17 @@ public final class BlockIds {
 	 * {@code [a-z0-9_.-]}, path {@code [a-z0-9_./-]}; an empty namespace as in {@code ":stone"} means
 	 * {@code minecraft}). Whitespace between the id, the state and the NBT is dropped, and an empty
 	 * state {@code []} is dropped. Brackets and braces must balance (quoted strings are skipped) and the
-	 * state must come before the NBT. Whitespace inside quoted strings in the state is kept.
+	 * state must come before the NBT. Whitespace inside quoted strings in the state is kept. The input and the
+	 * result may be at most {@link #MAX_LENGTH} characters long, so normalizing a result again always works.
 	 *
-	 * @throws IllegalArgumentException if blank or malformed (unbalanced brackets, empty id)
+	 * @throws IllegalArgumentException if blank, too long or malformed (unbalanced brackets, empty id)
 	 */
 	public static String normalize(String raw) {
 		if (raw == null) {
 			throw new IllegalArgumentException("block id is null");
+		}
+		if (raw.length() > MAX_LENGTH) {
+			throw tooLong(raw.length());
 		}
 		String s = raw.trim();
 		if (s.isEmpty()) {
@@ -63,7 +70,14 @@ public final class BlockIds {
 		if (i < n) {
 			throw new IllegalArgumentException("unexpected '" + s.charAt(i) + "' at position " + i + " in block id: " + raw);
 		}
+		if (out.length() > MAX_LENGTH) {
+			throw tooLong(out.length());
+		}
 		return out.toString();
+	}
+
+	private static IllegalArgumentException tooLong(int length) {
+		return new IllegalArgumentException("block id is too long (" + length + " characters, limit " + MAX_LENGTH + ")");
 	}
 
 	/** True for air, cave_air and void_air (with or without namespace, normalized or not). */

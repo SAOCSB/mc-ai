@@ -156,6 +156,25 @@ class BlueprintTest {
 	}
 
 	@Test
+	void paletteLimitCountsDifferentIds() {
+		Blueprint bp = blueprint();
+		for (int i = 0; i < Blueprint.MAX_PALETTE; i++) {
+			bp.set(i % 300, i / 300, 0, "mymod:block_" + i);
+		}
+		// overwritten ids still count, reused ids are fine
+		bp.set(0, 0, 0, "mymod:block_1");
+		bp.set(0, 0, 1, " MyMod:Block_7 ");
+		BlueprintLimitException e = assertThrows(BlueprintLimitException.class, () -> bp.set(5, 5, 5, "stone"));
+		assertEquals("LimitError: too many different block ids (limit 4096)", e.getMessage());
+		assertEquals(4096, Blueprint.MAX_PALETTE);
+		assertNull(bp.get(5, 5, 5));
+		assertEquals(Blueprint.MAX_PALETTE + 1, bp.size());
+		// replaceAll (used to fix ids after the script) is not bound by the limit
+		assertEquals(1, bp.replaceAll("mymod:block_2", "stone"));
+		assertEquals("minecraft:stone", bp.get(2, 0, 0));
+	}
+
+	@Test
 	void spanLimitNamesAxisSpanAndLimit() {
 		Blueprint bp = new Blueprint(1000, 5);
 		bp.set(0, 0, 0, "stone");

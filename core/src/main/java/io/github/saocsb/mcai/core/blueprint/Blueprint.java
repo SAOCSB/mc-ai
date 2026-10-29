@@ -14,7 +14,8 @@ import java.util.List;
  * Iteration order is insertion order of the first placement at each position.
  *
  * <p>Limits: at most {@code maxBlocks} distinct positions, every axis span at most {@code maxSpan},
- * and every coordinate within +/-{@link #COORD_LIMIT}. Violations throw {@link BlueprintLimitException}
+ * every coordinate within +/-{@link #COORD_LIMIT}, and at most {@link #MAX_PALETTE} different block ids placed
+ * with {@link #set} (ids of overwritten blocks still count). Violations throw {@link BlueprintLimitException}
  * with a message suitable for showing to the LLM (it names the limit and the offending value).
  * Messages start with {@code "LimitError: "}. A failed {@link #set} leaves the blueprint unchanged.
  * Not thread-safe.
@@ -22,6 +23,8 @@ import java.util.List;
 public final class Blueprint implements BlockSink {
 	/** Absolute bound for any local coordinate. */
 	public static final int COORD_LIMIT = 30_000;
+	/** Most different block ids {@link #set} accepts; {@link #replaceAll} may add a few more. */
+	public static final int MAX_PALETTE = 4096;
 
 	private static final int OFFSET = 1 << 15;
 	private static final int MASK = 0xFFFF;
@@ -210,7 +213,10 @@ public final class Blueprint implements BlockSink {
 		}
 	}
 
-	/** Replaces every occurrence of palette entry {@code from} with {@code to} (both normalized first). Returns positions changed. */
+	/**
+	 * Replaces every occurrence of palette entry {@code from} with {@code to} (both normalized first). Returns positions
+	 * changed. Not bound by {@link #MAX_PALETTE}, so fixing ids after a script never fails on that limit.
+	 */
 	public int replaceAll(String from, String to) {
 		String source = BlockIds.normalize(from);
 		String target = BlockIds.normalize(to);
@@ -219,7 +225,7 @@ public final class Blueprint implements BlockSink {
 			return 0;
 		}
 		int s = sourceIndex;
-		int t = paletteIndexOfNormalized(target);
+		int t = paletteIndexOfNormalized(target, false);
 		int changed = 0;
 		for (int i = 0; i < slots; i++) {
 			if (blocks[i] == s) {
@@ -252,7 +258,7 @@ public final class Blueprint implements BlockSink {
 		if (cached != null) {
 			result = cached;
 		} else {
-			result = paletteIndexOfNormalized(BlockIds.normalize(raw));
+			result = paletteIndexOfNormalized(BlockIds.normalize(raw), true);
 			if (rawIndex.size() < RAW_CACHE_LIMIT) {
 				rawIndex.put(raw, result);
 			}
@@ -262,12 +268,15 @@ public final class Blueprint implements BlockSink {
 		return result;
 	}
 
-	private int paletteIndexOfNormalized(String normalized) {
+	private int paletteIndexOfNormalized(String normalized, boolean limited) {
 		Integer existing = paletteIndex.get(normalized);
 		if (existing != null) {
 			return existing;
 		}
 		int created = palette.size();
+		if (limited && created >= MAX_PALETTE) {
+			throw new BlueprintLimitException("LimitError: too many different block ids (limit " + MAX_PALETTE + ")");
+		}
 		palette.add(normalized);
 		paletteIndex.put(normalized, created);
 		if (created == usage.length) {

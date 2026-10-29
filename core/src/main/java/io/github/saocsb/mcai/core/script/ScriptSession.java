@@ -1042,7 +1042,7 @@ final class ScriptSession {
 	private String blockId(Object[] a, int i, String fn) {
 		Object v = i < a.length ? a[i] : Undefined.instance;
 		if (v instanceof CharSequence cs) {
-			if (cs.length() > MAX_ARGUMENT_LENGTH) {
+			if (cs.length() > BlockIds.MAX_LENGTH) {
 				throw ScriptRuntime.typeError(fn + "(): invalid block id (" + cs.length() + " characters long)");
 			}
 			String raw = cs.toString();
