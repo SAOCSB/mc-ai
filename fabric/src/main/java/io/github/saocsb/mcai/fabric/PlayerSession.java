@@ -40,8 +40,12 @@ final class PlayerSession {
 	Transform lastTransform;
 	ResourceKey<Level> lastDimension;
 	long lastBuildId;
-	/** Id of a build dropped before it placed anything (a cleared confirmation): replacing it undoes nothing. */
+	/**
+	 * Id of a build dropped before it placed anything (a cleared confirmation), and the build it would have replaced
+	 * (0: none). Replacing the dropped build replaces that one instead.
+	 */
 	long discardedBuildId;
+	long discardedReplaceTarget;
 	/** When the player was first seen offline (0 while online); used to evict idle sessions. */
 	long offlineSinceMillis;
 
@@ -88,9 +92,19 @@ final class PlayerSession {
 	/** Drops the build waiting for confirmation (it never placed anything). */
 	void discardPending() {
 		if (pending != null) {
+			long target = pending.replace() ? replaceTarget(pending.replaceTarget()) : 0;
 			discardedBuildId = pending.job().id();
+			discardedReplaceTarget = target;
 			pending = null;
 		}
+	}
+
+	/**
+	 * The build a replace aimed at {@code target} must undo: {@code target} itself, or for a dropped build the one it
+	 * would have replaced (0 when that is none, i.e. nothing to undo).
+	 */
+	long replaceTarget(long target) {
+		return target != 0 && target == discardedBuildId ? discardedReplaceTarget : target;
 	}
 
 	/** The previous build's transform if it was in {@code dimension}, else null. */

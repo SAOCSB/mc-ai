@@ -505,9 +505,10 @@ public final class AiService implements BuildManager.Listener {
 	 * exactly its record (never just the newest record). If it is no longer in the undo history, nothing is undone
 	 * and the player is told.
 	 */
-	private void undoReplaced(ServerPlayer player, PlayerSession session, long target) {
-		if (target != 0 && target == session.discardedBuildId) {
-			return; // dropped before it placed anything
+	private void undoReplaced(ServerPlayer player, PlayerSession session, long requested) {
+		long target = session.replaceTarget(requested);
+		if (requested != 0 && target == 0) {
+			return; // a build dropped before it placed anything, which itself replaced nothing
 		}
 		boolean wasQueued = target != 0 && builds.cancelBuild(target);
 		UndoRecord record = target == 0 ? null : session.removeUndo(target);

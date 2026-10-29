@@ -13,9 +13,11 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 - **支持多家模型**：DeepSeek、通义千问、Kimi、智谱 GLM、硅基流动、火山方舟（豆包）、OpenAI、Claude、Gemini、OpenRouter，以及 Ollama / LM Studio 本地模型。任何兼容 OpenAI 接口的服务都能接。
 - **只装在服务端**：玩家用原版客户端就能进服。单人游戏把它装进客户端的 mods 文件夹即可（单人游戏同样跑在内置服务器上）。
 - **安全默认值**：
-  - 不覆盖箱子等方块实体；
+  - 不覆盖箱子等方块实体，撤销时也不会覆盖建造后被玩家改过的方块或装了东西的箱子；
   - 脚本跑在没有 Java 访问权限的沙箱里，有时间、方块数量和体积上限；
-  - AI 只能执行白名单里的指令；
+  - 不能放命令方块、结构方块、刷怪笼等，告示牌、讲台等也不能带数据；
+  - AI 只能执行白名单里的指令，而且默认只能作用于提问的玩家自己；
+  - 建造不能离玩家太远，会跳过出生点保护区和世界边界以外的位置；
   - 超大建筑要先确认。
 
 ## 安装
@@ -25,7 +27,7 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 3. 启动一次游戏或服务器，会生成配置文件 `config/mcai.json`。
 4. 填入 API Key（二选一）：
    - 编辑 `config/mcai.json`，在当前服务商（`provider`）对应的条目里填写 `apiKey`；
-   - 进游戏后（需要 OP 权限）执行 `/ai config key <你的密钥>`。
+   - 在服务器控制台，或以 4 级权限（服主）进游戏后，执行 `/ai config key <你的密钥>`。单人游戏开启作弊即可。
 
 也可以用环境变量提供密钥，比如 `DEEPSEEK_API_KEY`，或者通用的 `MCAI_API_KEY`。
 
@@ -37,6 +39,8 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 /ai config baseurl <url>          自定义接口地址（比如中转服务）
 /ai reload                        修改配置文件后重新加载
 ```
+
+`provider`、`key` 和 `baseurl` 只有服主（4 级权限）或服务器控制台能改，因为它们决定请求和密钥发往哪里；`model` 和 `reload` 只需要 `permissions.adminLevel`。如果启动时配置文件读取失败，在 `/ai reload` 成功之前不能用 `/ai config` 修改设置，以免默认值覆盖你的文件。
 
 内置服务商及默认模型（随时可以改）：
 
@@ -80,7 +84,8 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 | `/ai clear` | 清空 AI 对你的对话记忆 |
 | `/ai status` | 查看当前服务商、模型、队列状态 |
 | `/ai help` | 帮助 |
-| `/ai reload`、`/ai config ...` | 管理员：重新加载配置、切换服务商、模型、密钥 |
+| `/ai reload`、`/ai config model ...` | 管理员（`permissions.adminLevel`）：重新加载配置、换模型 |
+| `/ai config provider\|key\|baseurl ...` | 服主（4 级权限）或控制台：切换服务商、密钥、接口地址 |
 
 建筑默认造在你面前（正面朝向你），以你脚下那一层为地面。如果要“围绕我”“在原地修改”或“建在指定坐标”，直接跟 AI 说就行，它会自己选择放置方式。
 
@@ -89,7 +94,7 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 | 键 | 默认值 | 说明 |
 |---|---|---|
 | `provider` | `deepseek` | 当前使用的服务商（`providers` 里的键） |
-| `providers.<id>` | 内置预设 | `apiStyle`（`openai`/`anthropic`）、`baseUrl`、`apiKey`、`apiKeyEnv`、`model`、`maxTokens`、`temperature`、`effort`、`stream`、`timeoutSeconds`、`extraHeaders`、`extraBody` |
+| `providers.<id>` | 内置预设 | `apiStyle`（`openai`/`anthropic`）、`baseUrl`、`apiKey`、`apiKeyEnv`、`model`、`maxTokens`、`temperature`、`effort`、`stream`、`timeoutSeconds`、`extraHeaders`、`extraBody`。内置服务商的条目只需写想改的字段，其余取预设；`extraHeaders`/`extraBody` 按键合并（你的键优先，值写 `null` 可去掉预设的字段） |
 | `proxy` | `""` | 访问模型用的 HTTP 代理，如 `127.0.0.1:7890` |
 | `language` | `auto` | 提示语言：`auto` 跟随玩家客户端语言，或固定为 `zh_cn` / `en_us` |
 | `aiName` | `AI` | AI 在聊天栏里显示的名字 |
@@ -103,11 +108,13 @@ MC-AI 是一个 **Fabric 服务端模组**（Minecraft Java 版 **26.3**）。�
 | `build.blocksPerTick` | 2000 | 每 tick 放置的方块数，服务器卡顿时调小 |
 | `build.confirmAboveBlocks` | 100000 | 超过这个数量要先 `/ai confirm`，0 表示不需要确认 |
 | `build.protectBlockEntities` | true | 不覆盖箱子、熔炉、告示牌等 |
-| `build.undoHistory` | 5 | 每个玩家可撤销的建造次数 |
+| `build.undoHistory` | 5 | 每个玩家可撤销的建造次数。撤销只还原仍是建造时那种方块的位置，并跳过装有物品的容器 |
+| `build.maxDistance` | 160 | 建造离玩家最近的一格超过这个水平距离（格）就拒绝建造，更远的召唤也会跳过；范围 8–4096，对 `absolute` 和 `previous` 放置同样有效 |
+| `build.deniedBlocks` | `command_block`、`chain_command_block`、`repeating_command_block`、`structure_block`、`jigsaw`、`spawner`、`trial_spawner` | 脚本不能放的方块（也不能出现在 AI 指令里）。命令方块、结构方块、拼图方块和测试方块无论是否列出都会被拒绝。另外只有箱子、陷阱箱、木桶、潜影盒、漏斗、发射器、投掷器、熔炉、高炉、烟熏炉、酿造台、旗帜、饰纹陶罐和雕纹书架能带方块数据（NBT），告示牌、讲台等的数据一律去掉 |
 | `commands.enabled` | true | 是否允许 AI 执行指令（召唤、给予、时间、天气……） |
-| `commands.whitelist` | 见文件 | 允许 AI 使用的指令 |
-| `commands.allowSelectors` | false | 是否允许 `@a`/`@e`/`@r`/`@n` 选择器 |
-| `permissions.useLevel` / `adminLevel` | 0 / 2 | 使用 AI / 管理配置所需的权限等级 |
+| `commands.whitelist` | `summon`、`give`、`time`、`weather`、`effect`、`playsound`、`title`、`tellraw`、`xp`、`experience`、`enchant`、`tp`、`teleport` | 允许 AI 使用的指令。`execute` 和 `function` 永远不允许。`particle`（数量没有上限）和 `say`（会再次触发 AI）不再默认允许，旧版配置升级时会自动去掉 |
+| `commands.allowSelectors` | false | 是否允许 AI 指令作用于别人：`@a`/`@e`/`@r`/`@n`、`@p[...]`、其他在线玩家的名字或 UUID，以及传送别人。关闭时只能用 `@s` 和不带参数的 `@p`，`tp` 只能是 `tp <x> <y> <z>` 或 `tp @s ...`。无论如何，带命令方块、刷怪笼或方块实体数据的指令都会被拒绝 |
+| `permissions.useLevel` / `adminLevel` | 0 / 2 | 使用 AI 所需的权限等级 / `/ai reload` 和 `/ai config model` 所需的权限等级。`/ai config provider\|key\|baseurl` 始终需要 4 级（服主或控制台） |
 
 ## 从源码构建
 
@@ -147,10 +154,12 @@ MC-AI is a server-side **Fabric mod for Minecraft Java 26.3** that lets players 
 
 1. Install Fabric Loader, Fabric API (Java 25) and the jar.
 2. Start once.
-3. Put your API key in `config/mcai.json`, or run `/ai config key <key>` as an operator. You can also use an environment variable such as `OPENAI_API_KEY` or `MCAI_API_KEY`.
+3. Put your API key in `config/mcai.json`, or run `/ai config key <key>` from the server console or as a level-4 operator (the singleplayer host with cheats on). You can also use an environment variable such as `OPENAI_API_KEY` or `MCAI_API_KEY`.
 4. Talk with `@ai <message>` or `/ai <message>`.
 
-The other commands are `/ai stop`, `undo`, `confirm`, `clear`, `status` and `help`. Operators also get `/ai reload` and `/ai config provider|model|key|baseurl <value>`.
+The other commands are `/ai stop`, `undo`, `confirm`, `clear`, `status` and `help`. Admins (`permissions.adminLevel`, default 2) also get `/ai reload` and `/ai config model <value>`; `/ai config provider|key|baseurl <value>` need level 4 (server owner or console).
+
+**Safety defaults:** scripts cannot place command, structure, jigsaw or test blocks or anything in `build.deniedBlocks` (spawners by default), and block data is kept only for storage blocks (no sign or lectern data). AI commands come from a whitelist (`particle` and `say` are no longer in it), may not carry command or block-entity data, and unless `commands.allowSelectors` is set can only target the requesting player (`@s`, bare `@p`, `tp <x> <y> <z>`). Builds farther than `build.maxDistance` (160) blocks are refused, and positions under spawn protection or outside the world border are skipped. `/ai undo` only reverts positions that still hold the block the build placed and never empties a container.
 
 **Build:** `./gradlew build` with JDK 25. Use `./gradlew -PcoreOnly :core:test` for the Minecraft-independent core only.
 
