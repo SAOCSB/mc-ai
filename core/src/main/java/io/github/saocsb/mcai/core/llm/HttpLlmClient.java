@@ -32,6 +32,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.UnaryOperator;
 
 /**
  * Shared HTTP machinery of the clients: request building, async exchange with a line-based body reader,
@@ -190,6 +191,20 @@ abstract class HttpLlmClient {
 				body.add(key, Json.toJson(value));
 			}
 		});
+	}
+
+	/**
+	 * The endpoint for a base URL: {@code addPath} gets the base without its query string and trailing slashes, and
+	 * the query ({@code ?...}) is appended again after the path it returns, so
+	 * {@code https://gw/v1?api-version=1} becomes {@code https://gw/v1/chat/completions?api-version=1}. "" for a
+	 * blank base.
+	 */
+	static String endpoint(String baseUrl, UnaryOperator<String> addPath) {
+		String url = baseUrl == null ? "" : baseUrl.trim();
+		int q = url.indexOf('?');
+		String query = q < 0 ? "" : url.substring(q);
+		String base = stripTrailingSlashes(q < 0 ? url : url.substring(0, q));
+		return base.isEmpty() ? "" : addPath.apply(base) + query;
 	}
 
 	static String stripTrailingSlashes(String url) {

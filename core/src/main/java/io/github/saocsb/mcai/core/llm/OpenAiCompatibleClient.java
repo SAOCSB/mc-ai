@@ -16,8 +16,9 @@ import java.util.concurrent.CompletableFuture;
  * "reasoning_effort"?, "stream"?, ...extraBody}}; header {@code Authorization: Bearer <key>} (omitted when
  * the key is blank, for local servers). Consecutive same-role messages are merged and blank ones dropped;
  * with {@link ProviderConfig#echoReasoningContent()} assistant messages carry {@code "reasoning_content": " "}.
- * Streaming parses SSE {@code data:} lines until {@code [DONE]} (or the end of the stream),
- * accumulating {@code choices[0].delta.content}; {@code delta.reasoning_content} / {@code delta.reasoning} /
+ * Streaming parses SSE {@code data:} lines until {@code [DONE]} (or the end of the stream; a stream that ends
+ * without {@code [DONE]} or a finish_reason is reported as truncated with stop reason
+ * {@link LlmResponse#INCOMPLETE_STREAM}), accumulating {@code choices[0].delta.content}; {@code delta.reasoning_content} / {@code delta.reasoning} /
  * {@code delta.reasoning_details[].text} count as reasoning progress only. Visible text has
  * {@code <think>...</think>} blocks removed (a leading one is routed to reasoning while streaming).
  * finish_reason "length" => truncated; "content_filter" or a {@code refusal} => refused (text = the refusal).
@@ -44,13 +45,9 @@ public final class OpenAiCompatibleClient extends HttpLlmClient implements LlmCl
 		return execute(request, listener);
 	}
 
-	/** {@code baseUrl + "/chat/completions"}, unless the base already ends with it. */
+	/** {@code baseUrl + "/chat/completions"}, unless the base already ends with it; a query string stays at the end. */
 	static String endpoint(String baseUrl) {
-		String base = stripTrailingSlashes(baseUrl);
-		if (base.isEmpty() || base.endsWith(PATH)) {
-			return base;
-		}
-		return base + PATH;
+		return endpoint(baseUrl, base -> base.endsWith(PATH) ? base : base + PATH);
 	}
 
 	@Override
@@ -194,6 +191,7 @@ public final class OpenAiCompatibleClient extends HttpLlmClient implements LlmCl
 		private String model;
 		private int inputTokens;
 		private int outputTokens;
+		private boolean done;
 
 		Stream(LlmProgressListener listener) {
 			super(listener);
@@ -203,6 +201,7 @@ public final class OpenAiCompatibleClient extends HttpLlmClient implements LlmCl
 		boolean onEvent(String event, String data) {
 			String trimmed = data.trim();
 			if (trimmed.equals("[DONE]")) {
+				done = true;
 				return true;
 			}
 			if ("error".equals(event)) {
@@ -224,6 +223,7 @@ public final class OpenAiCompatibleClient extends HttpLlmClient implements LlmCl
 			for (String part : trimmed.split("\n")) {
 				String p = part.trim();
 				if (p.equals("[DONE]")) {
+					done = true;
 					return true;
 				}
 				JsonObject json = Json.parseObject(p);
@@ -297,8 +297,10 @@ public final class OpenAiCompatibleClient extends HttpLlmClient implements LlmCl
 			String visible = text.finalText();
 			boolean hasRefusal = !refusal.isEmpty();
 			String result = hasRefusal && !refusal.toString().isBlank() ? refusal.toString() : visible;
-			return new LlmResponse(result, finishReason, modelOf(model), inputTokens, outputTokens,
-					"length".equals(finishReason), hasRefusal || "content_filter".equals(finishReason));
+			boolean complete = done || finishReason != null;
+			return new LlmResponse(result, complete ? finishReason : LlmResponse.INCOMPLETE_STREAM, modelOf(model),
+					inputTokens, outputTokens, !complete || "length".equals(finishReason),
+					hasRefusal || "content_filter".equals(finishReason));
 		}
 	}
 }

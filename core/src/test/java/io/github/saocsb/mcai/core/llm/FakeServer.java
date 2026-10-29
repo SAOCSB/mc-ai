@@ -21,8 +21,8 @@ import java.util.concurrent.TimeUnit;
 
 /** A scripted fake LLM provider on 127.0.0.1 for client tests. */
 final class FakeServer implements AutoCloseable {
-	/** One request as the server saw it. */
-	record Recorded(String method, String path, Headers headers, String body, long nanoTime) {
+	/** One request as the server saw it; query is the raw query string or null. */
+	record Recorded(String method, String path, String query, Headers headers, String body, long nanoTime) {
 		JsonObject json() {
 			return JsonParser.parseString(body).getAsJsonObject();
 		}
@@ -74,7 +74,7 @@ final class FakeServer implements AutoCloseable {
 		try (exchange) {
 			String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
 			requests.add(new Recorded(exchange.getRequestMethod(), exchange.getRequestURI().getPath(),
-					exchange.getRequestHeaders(), body, System.nanoTime()));
+					exchange.getRequestURI().getRawQuery(), exchange.getRequestHeaders(), body, System.nanoTime()));
 			Responder responder = responders.poll();
 			if (responder == null) {
 				responder = json(500, "{\"error\":{\"message\":\"nothing scripted\"}}");

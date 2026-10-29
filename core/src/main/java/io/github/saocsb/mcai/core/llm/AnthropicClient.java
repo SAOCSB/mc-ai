@@ -25,8 +25,11 @@ import java.util.concurrent.CompletableFuture;
  * <p>Streaming: SSE events {@code content_block_delta} with {@code text_delta} (visible text) or
  * {@code thinking_delta} (reasoning progress), {@code message_delta} (stop_reason, usage),
  * {@code error} (fail). Non-text blocks (thinking, fallback, ...) are ignored. stop_reason "max_tokens" or
- * "model_context_window_exceeded" => truncated; "refusal" => refused (text = {@code stop_details.explanation}
- * when present). Input tokens include cache reads and writes. Retries like {@link OpenAiCompatibleClient}, also on 529.
+ * "model_context_window_exceeded" => truncated; "refusal" => refused, with text = {@code stop_details.explanation}
+ * or "" (the partial output that was declined is dropped, streamed or not). A stream that ends without
+ * {@code message_stop} or a stop_reason is reported as truncated with stop reason
+ * {@link LlmResponse#INCOMPLETE_STREAM}. Input tokens include cache reads and writes. Retries like
+ * {@link OpenAiCompatibleClient}, also on 529.
  */
 public final class AnthropicClient extends HttpLlmClient implements LlmClient {
 	public static final String API_VERSION = "2026-10-21";
@@ -55,13 +58,13 @@ public final class AnthropicClient extends HttpLlmClient implements LlmClient {
 		return execute(request, listener);
 	}
 
-	/** {@code baseUrl + "/v1/messages"} (or {@code + "/messages"} when the base already ends with /v1). */
+	/**
+	 * {@code baseUrl + "/v1/messages"} (or {@code + "/messages"} when the base already ends with /v1); a query string
+	 * stays at the end.
+	 */
 	static String endpoint(String baseUrl) {
-		String base = stripTrailingSlashes(baseUrl);
-		if (base.isEmpty() || base.endsWith("/v1/messages")) {
-			return base;
-		}
-		return base.endsWith("/v1") ? base + "/messages" : base + "/v1/messages";
+		return endpoint(baseUrl, base -> base.endsWith("/v1/messages") ? base
+				: base.endsWith("/v1") ? base + "/messages" : base + "/v1/messages");
 	}
 
 	/** Whether the base URL points at Anthropic's own API (which gets the current version and fallbacks). */
@@ -147,18 +150,17 @@ public final class AnthropicClient extends HttpLlmClient implements LlmClient {
 			}
 		}
 		String stopReason = Json.str(json, "stop_reason");
-		String text = filter.finalText();
 		boolean refused = "refusal".equals(stopReason);
-		if (refused) {
-			String explanation = Json.str(Json.obj(json, "stop_details"), "explanation");
-			if (!isBlank(explanation)) {
-				text = explanation;
-			}
-		}
+		String text = refused ? refusalText(Json.str(Json.obj(json, "stop_details"), "explanation")) : filter.finalText();
 		JsonObject usage = Json.obj(json, "usage");
 		String model = Json.str(json, "model");
 		return new LlmResponse(text, stopReason, isBlank(model) ? config.model() : model,
 				inputTokens(usage, 0), Json.integer(usage, "output_tokens", 0), isTruncation(stopReason), refused);
+	}
+
+	/** The text of a refused response: the explanation, never the partial output that was declined. */
+	private static String refusalText(String explanation) {
+		return isBlank(explanation) ? "" : explanation;
 	}
 
 	private static boolean isTruncation(String stopReason) {
@@ -187,6 +189,7 @@ public final class AnthropicClient extends HttpLlmClient implements LlmClient {
 		private String explanation;
 		private int inputTokens;
 		private int outputTokens;
+		private boolean messageStopped;
 
 		Stream(LlmProgressListener listener) {
 			super(listener);
@@ -248,6 +251,7 @@ public final class AnthropicClient extends HttpLlmClient implements LlmClient {
 					usage(Json.obj(json, "usage"));
 				}
 				case "message_stop" -> {
+					messageStopped = true;
 					return true;
 				}
 				case "error" -> {
@@ -271,11 +275,12 @@ public final class AnthropicClient extends HttpLlmClient implements LlmClient {
 
 		@Override
 		LlmResponse finish() {
-			String visible = text.finalText();
 			boolean refused = "refusal".equals(stopReason);
-			String result = refused && !isBlank(explanation) ? explanation : visible;
-			return new LlmResponse(result, stopReason, isBlank(model) ? config.model() : model,
-					inputTokens, outputTokens, isTruncation(stopReason), refused);
+			String result = refused ? refusalText(explanation) : text.finalText();
+			boolean complete = messageStopped || stopReason != null;
+			return new LlmResponse(result, complete ? stopReason : LlmResponse.INCOMPLETE_STREAM,
+					isBlank(model) ? config.model() : model, inputTokens, outputTokens,
+					!complete || isTruncation(stopReason), refused);
 		}
 	}
 }

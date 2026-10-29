@@ -143,6 +143,57 @@ class AnthropicClientTest {
 		assertEquals("https://api.anthropic.com/v1/messages", AnthropicClient.endpoint("https://api.anthropic.com/v1"));
 		assertEquals("https://api.anthropic.com/v1/messages", AnthropicClient.endpoint("https://api.anthropic.com/v1/messages"));
 		assertEquals("https://api.deepseek.com/anthropic/v1/messages", AnthropicClient.endpoint("https://api.deepseek.com/anthropic"));
+		assertEquals("https://gw.example.com/anthropic/v1/messages?key=1",
+				AnthropicClient.endpoint("https://gw.example.com/anthropic/?key=1"));
+		assertEquals("https://gw.example.com/v1/messages?a=b&c=d", AnthropicClient.endpoint("https://gw.example.com/v1?a=b&c=d"));
+		assertEquals("https://gw.example.com/v1/messages?a", AnthropicClient.endpoint("https://gw.example.com/v1/messages?a"));
+		assertTrue(AnthropicClient.isOfficialHost("https://api.anthropic.com?beta=1"));
+	}
+
+	@Test
+	void requestKeepsTheBaseUrlQueryAfterThePath() throws Exception {
+		server.enqueue(sse(event("message_stop", "{\"type\":\"message_stop\"}")));
+		Cfg.anthropic(server.baseUrl() + "/proxy?tenant=a%20b").client().execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		FakeServer.Recorded req = server.take();
+		assertEquals("/proxy/v1/messages", req.path());
+		assertEquals("tenant=a%20b", req.query());
+	}
+
+	@Test
+	void streamEndingWithoutMessageStopOrStopReasonIsIncomplete() throws Exception {
+		server.enqueue(sse(
+				event("message_start", "{\"type\":\"message_start\",\"message\":{\"model\":\"claude-served\"}}"),
+				event("content_block_delta", "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Buil\"}}")));
+		server.enqueue(sse(
+				event("content_block_delta", "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done\"}}"),
+				event("message_delta", "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}")));
+		HttpLlmClient client = Cfg.anthropic(server.baseUrl()).client();
+		LlmResponse cut = client.execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		assertEquals("Buil", cut.text());
+		assertEquals(LlmResponse.INCOMPLETE_STREAM, cut.stopReason());
+		assertTrue(cut.truncated());
+		assertFalse(cut.refused());
+		assertEquals("claude-served", cut.model());
+		// a stop_reason without message_stop is enough
+		LlmResponse ended = client.execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		assertEquals("Done", ended.text());
+		assertEquals("end_turn", ended.stopReason());
+		assertFalse(ended.truncated());
+	}
+
+	@Test
+	void refusalNeverIncludesTheDeclinedPartialOutput() throws Exception {
+		server.enqueue(sse(
+				event("content_block_delta", "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Sure, here is how to\"}}"),
+				event("message_delta", "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}"),
+				event("message_stop", "{\"type\":\"message_stop\"}")));
+		server.enqueue(json(200, "{\"content\":[{\"type\":\"text\",\"text\":\"Sure, here is how to\"}],\"stop_reason\":\"refusal\"}"));
+		LlmResponse streamed = Cfg.anthropic(server.baseUrl()).client().execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		assertTrue(streamed.refused());
+		assertEquals("", streamed.text());
+		LlmResponse plain = Cfg.anthropic(server.baseUrl()).stream(false).client().execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		assertTrue(plain.refused());
+		assertEquals("", plain.text());
 	}
 
 	@Test

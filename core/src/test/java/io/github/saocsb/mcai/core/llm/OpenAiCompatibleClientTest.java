@@ -295,7 +295,37 @@ class OpenAiCompatibleClientTest {
 		LlmResponse r = Cfg.openai(server.baseUrl()).client().execute(REQUEST, null).get(10, TimeUnit.SECONDS);
 		assertEquals("ab", r.text());
 		assertEquals("stop", r.stopReason());
+		assertFalse(r.truncated());
 		assertEquals(0, r.inputTokens());
+	}
+
+	@Test
+	void streamEndingWithoutDoneOrFinishReasonIsIncomplete() throws Exception {
+		server.enqueue(sse(content("Here:\n```js\nfill(0,0,0,"), content("4,4")));
+		server.enqueue(sse(content("ok"), "data: [DONE]\n\n"));
+		HttpLlmClient client = Cfg.openai(server.baseUrl()).client();
+		LlmResponse r = client.execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		assertEquals("Here:\n```js\nfill(0,0,0,4,4", r.text());
+		assertEquals(LlmResponse.INCOMPLETE_STREAM, r.stopReason());
+		assertEquals("incomplete_stream", r.stopReason());
+		assertTrue(r.truncated());
+		assertFalse(r.refused());
+		// [DONE] alone ends the stream properly
+		LlmResponse done = client.execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		assertEquals("ok", done.text());
+		assertFalse(done.truncated());
+		assertNull(done.stopReason());
+	}
+
+	@Test
+	void requestKeepsTheBaseUrlQueryAfterThePath() throws Exception {
+		server.enqueue(json(200, completion("ok", "stop")));
+		LlmResponse r = Cfg.openai(server.baseUrl() + "/v1/?api-version=2024-10-21&x=1").stream(false).client()
+				.execute(REQUEST, null).get(10, TimeUnit.SECONDS);
+		assertEquals("ok", r.text());
+		FakeServer.Recorded req = server.take();
+		assertEquals("/v1/chat/completions", req.path());
+		assertEquals("api-version=2024-10-21&x=1", req.query());
 	}
 
 	@Test
@@ -334,5 +364,10 @@ class OpenAiCompatibleClientTest {
 		assertEquals("https://api.deepseek.com/v1/chat/completions", OpenAiCompatibleClient.endpoint(" https://api.deepseek.com/v1// "));
 		assertEquals("http://x/v1/chat/completions", OpenAiCompatibleClient.endpoint("http://x/v1/chat/completions/"));
 		assertEquals("", OpenAiCompatibleClient.endpoint(null));
+		assertEquals("https://gw.example.com/openai/v1/chat/completions?api-version=2024-10-21",
+				OpenAiCompatibleClient.endpoint("https://gw.example.com/openai/v1?api-version=2024-10-21"));
+		assertEquals("https://x/v1/chat/completions?a=1&b=/c/", OpenAiCompatibleClient.endpoint(" https://x/v1//?a=1&b=/c/ "));
+		assertEquals("https://x/v1/chat/completions?a=1", OpenAiCompatibleClient.endpoint("https://x/v1/chat/completions/?a=1"));
+		assertEquals("", OpenAiCompatibleClient.endpoint("?a=1"));
 	}
 }
