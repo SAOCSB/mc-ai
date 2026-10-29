@@ -1,0 +1,15 @@
+{
+	"schemaVersion": 1,
+	"id": "mcai-gametest",
+	"version": "1.0.0",
+	"name": "MC-AI game tests",
+	"environment": "*",
+	"entrypoints": {
+		"fabric-gametest": [
+			"io.github.saocsb.mcai.fabric.test.McAiGameTest"
+		]
+	},
+	"depends": {
+		"mcai": "*"
+	}
+}

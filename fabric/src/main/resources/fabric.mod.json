@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "mcai",
+	"version": "${version}",
+	"name": "MC-AI",
+	"description": "Chat with an AI (large language model) in Minecraft and let it build anything you describe - from a cottage to the Eiffel Tower.",
+	"authors": [
+		"SAOCSB"
+	],
+	"contact": {
+		"sources": "https://github.com/SAOCSB/mc-ai",
+		"issues": "https://github.com/SAOCSB/mc-ai/issues"
+	},
+	"license": "MIT",
+	"icon": "assets/mcai/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"io.github.saocsb.mcai.fabric.McAiMod"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

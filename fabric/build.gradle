@@ -1,0 +1,63 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+base {
+	archivesName = project.mod_id
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// The Minecraft-independent core and its script engine, nested in the mod jar (include is not transitive).
+	implementation project(':core')
+	include project(':core')
+	implementation "org.mozilla:rhino:${project.rhino_version}"
+	include "org.mozilla:rhino:${project.rhino_version}"
+}
+
+fabricApi {
+	configureTests {
+		// Server game tests in src/gametest run as part of `./gradlew build` (task runGameTest).
+		createSourceSet = true
+		modId = "${project.mod_id}-gametest"
+		enableGameTests = true
+		enableClientGameTests = false
+	}
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+java {
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+	def modId = project.mod_id
+	inputs.property "modId", modId
+
+	from(rootProject.file("LICENSE")) {
+		rename { "${it}_${modId}" }
+	}
+}
