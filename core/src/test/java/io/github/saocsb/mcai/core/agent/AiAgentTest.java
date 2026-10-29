@@ -1,15 +1,20 @@
 package io.github.saocsb.mcai.core.agent;
 
+import io.github.saocsb.mcai.core.blueprint.BlockIds;
+import io.github.saocsb.mcai.core.blueprint.Blueprint;
 import io.github.saocsb.mcai.core.llm.ChatMessage;
 import io.github.saocsb.mcai.core.llm.LlmException;
 import io.github.saocsb.mcai.core.llm.LlmRequest;
 import io.github.saocsb.mcai.core.script.ScriptLimits;
 import io.github.saocsb.mcai.core.script.WorldAction;
+import io.github.saocsb.mcai.core.util.Suggest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -18,9 +23,11 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -169,31 +176,35 @@ class AiAgentTest {
 		assertEquals(List.of(userTurn, ChatMessage.assistant(bad), ChatMessage.user(PromptBuilder.repairTurn(error, 2, 3))),
 				messagesOfCall(1));
 		assertTrue(messagesOfCall(1).get(2).content().contains(error));
-		assertEquals(List.of(ChatMessage.user("Steve: build a box"), ChatMessage.assistant("Fixed it:\n" + FIXED_REPLY)),
-				conversation.messages());
+		// After a repair the conversation keeps the first reply's chat plus the script that actually worked.
+		assertEquals(List.of(ChatMessage.user("Steve: build a box"),
+				ChatMessage.assistant("Building!\n\n```js\n" + FIXED_SCRIPT + "\n```")), conversation.messages());
+		assertEquals(List.of(), outcome.warnings());
 	}
 
 	@Test
 	void invalidBlocksAreRepaired() throws Exception {
-		llm.reply("```js\nfill(0,0,0,3,3,3,'stone_brick');\n```").reply("```js\nfill(0,0,0,3,3,3,'stone_bricks');\n```");
-		runner.ok("minecraft:stone_brick", "minecraft:glass").ok("minecraft:stone_bricks", "minecraft:glass");
+		llm.reply("```js\nfill(0,0,0,3,3,3,'marble_pillar');\n```").reply("```js\nfill(0,0,0,3,3,3,'quartz_pillar');\n```");
+		runner.ok("minecraft:marble_pillar", "minecraft:glass").ok("minecraft:quartz_pillar", "minecraft:glass");
 		List<List<String>> validated = new CopyOnWriteArrayList<>();
 		BlockValidator validator = ids -> {
 			validated.add(List.copyOf(ids));
-			return ids.contains("minecraft:stone_brick")
-					? List.of(new InvalidBlock("minecraft:stone_brick", "unknown block",
-							List.of("minecraft:stone_bricks", "minecraft:stone")))
+			return ids.contains("minecraft:marble_pillar")
+					? List.of(new InvalidBlock("minecraft:marble_pillar", "unknown block",
+							List.of("minecraft:quartz_pillar", "minecraft:stone")))
 					: List.of();
 		};
 
 		AgentOutcome outcome = await(agent().handle(request("wall", 2, validator)));
 
 		String error = "Unknown or invalid block ids:\n"
-				+ "- minecraft:stone_brick: unknown block (did you mean: minecraft:stone_bricks, minecraft:stone?)";
+				+ "- minecraft:marble_pillar: unknown block (did you mean: minecraft:quartz_pillar, minecraft:stone?)";
 		assertNotNull(outcome.result());
 		assertEquals(2, outcome.attempts());
-		assertEquals(List.of(List.of("minecraft:stone_brick", "minecraft:glass"),
-				List.of("minecraft:stone_bricks", "minecraft:glass")), validated);
+		assertEquals(List.of(), outcome.warnings());
+		// No auto-fix candidates (no alias/rule, suggestions outside a block family), so no extra validator call.
+		assertEquals(List.of(List.of("minecraft:marble_pillar", "minecraft:glass"),
+				List.of("minecraft:quartz_pillar", "minecraft:glass")), validated);
 		assertEquals(List.of(2, 3, "Unknown or invalid block ids:"), listener.statuses(AgentStatus.REPAIRING).get(0).args());
 		ChatMessage repair = messagesOfCall(1).get(2);
 		assertEquals(ChatMessage.user(PromptBuilder.repairTurn(error, 2, 3)), repair);
@@ -791,5 +802,293 @@ class AiAgentTest {
 				+ "- minecraft:stone_brick: unknown block (did you mean: minecraft:stone_bricks?)\n"
 				+ "- minecraft:oak_stairs[facing=up]: invalid value 'up' for property facing\n"
 				+ "- minecraft:foo: unknown block", message);
+	}
+
+	// --- Auto-fixing invalid block ids ---
+
+	/**
+	 * A registry-like validator: only the given ids (exact normalized strings, states included) are valid; every
+	 * rejected id gets {@link Suggest#closest} suggestions over the valid base ids, like the Minecraft adapter. Each
+	 * call's ids are recorded in {@code calls}.
+	 */
+	private static BlockValidator registry(List<List<String>> calls, String... valid) {
+		Set<String> accepted = Set.of(valid);
+		List<String> bases = Arrays.stream(valid).map(BlockIds::baseId).distinct().toList();
+		return ids -> {
+			calls.add(List.copyOf(ids));
+			return ids.stream()
+					.filter(id -> !accepted.contains(id))
+					.map(id -> new InvalidBlock(id, "unknown block", Suggest.closest(id, bases, 3)))
+					.toList();
+		};
+	}
+
+	/** Places {@code count} blocks of {@code id} along +x at height 0, depth z. */
+	private static void row(Blueprint blueprint, int z, String id, int count) {
+		for (int x = 0; x < count; x++) {
+			blueprint.set(x, 0, z, id);
+		}
+	}
+
+	@Test
+	void unknownBlocksAreAutoFixedWithoutARepairRoundTrip() throws Exception {
+		Blueprint blueprint = new Blueprint(1000, 64);
+		row(blueprint, 0, "stone_brick", 4);
+		row(blueprint, 1, "glass", 2);
+		String reply = "A wall!\n```js\nfill(0, 0, 0, 3, 0, 0, 'stone_brick');\n```";
+		llm.reply(reply);
+		runner.okBlueprint(blueprint);
+		List<List<String>> validated = new CopyOnWriteArrayList<>();
+
+		AgentOutcome outcome = await(agent().handle(request("wall", 2,
+				registry(validated, "minecraft:stone_bricks", "minecraft:glass"))));
+
+		assertEquals(1, outcome.attempts());
+		assertNull(outcome.failure());
+		assertSame(blueprint, outcome.result().blueprint());
+		assertEquals(List.of("auto-fixed block 'stone_brick' -> 'stone_bricks'"), outcome.warnings());
+		assertEquals(List.of("minecraft:glass", "minecraft:stone_bricks"), blueprint.palette());
+		assertEquals("minecraft:stone_bricks", blueprint.get(3, 0, 0));
+		assertEquals(6, blueprint.size());
+		assertEquals(List.of(List.of("minecraft:stone_brick", "minecraft:glass"), List.of("minecraft:stone_bricks")),
+				validated);
+		assertEquals(1, llm.calls.size());
+		assertEquals(List.of("THINKING[0]", "chat(A wall!)", "RUNNING_SCRIPT[]"), events());
+		// No repair: the reply is stored as it was.
+		assertEquals(List.of(ChatMessage.user("Steve: wall"), ChatMessage.assistant(reply)), conversation.messages());
+	}
+
+	@Test
+	void autoFixValidatesAllCandidatesInOneCallAndKeepsBlockStates() throws Exception {
+		Blueprint blueprint = new Blueprint(1000, 64);
+		blueprint.set(0, 0, 0, "oak_planks_stairs[facing=east]");
+		blueprint.set(1, 0, 0, "stone_brick[facing=north]");
+		blueprint.set(2, 0, 0, "oak_log[facing=up]");
+		blueprint.set(3, 0, 0, "brich_stairs[half=top]");
+		blueprint.set(4, 0, 0, "glass");
+		llm.reply(GOOD_REPLY);
+		runner.okBlueprint(blueprint);
+		List<List<String>> validated = new CopyOnWriteArrayList<>();
+		BlockValidator validator = registry(validated, "minecraft:oak_stairs[facing=east]", "minecraft:stone_bricks",
+				"minecraft:oak_log", "minecraft:birch_stairs[half=top]", "minecraft:glass");
+
+		AgentOutcome outcome = await(agent().handle(request("tower", 2, validator)));
+
+		assertEquals(1, outcome.attempts());
+		assertEquals(2, validated.size());
+		assertEquals(List.of(
+				// oak_planks_stairs[facing=east]: rule with state, rule without state, input without state
+				"minecraft:oak_stairs[facing=east]", "minecraft:oak_stairs", "minecraft:oak_planks_stairs",
+				// stone_brick[facing=north]: alias with state, alias, input without state
+				"minecraft:stone_bricks[facing=north]", "minecraft:stone_bricks", "minecraft:stone_brick",
+				// oak_log[facing=up]: only the input without its invalid state
+				"minecraft:oak_log",
+				// brich_stairs[half=top]: input without state, then the registry's fuzzy suggestion (same family)
+				"minecraft:brich_stairs", "minecraft:birch_stairs[half=top]", "minecraft:birch_stairs"),
+				validated.get(1));
+		assertEquals(List.of(
+				"auto-fixed block 'oak_planks_stairs[facing=east]' -> 'oak_stairs[facing=east]'",
+				"auto-fixed block 'stone_brick[facing=north]' -> 'stone_bricks'",
+				"auto-fixed block 'oak_log[facing=up]' -> 'oak_log'",
+				"auto-fixed block 'brich_stairs[half=top]' -> 'birch_stairs[half=top]'"), outcome.warnings());
+		assertEquals("minecraft:oak_stairs[facing=east]", blueprint.get(0, 0, 0));
+		assertEquals("minecraft:stone_bricks", blueprint.get(1, 0, 0));
+		assertEquals("minecraft:oak_log", blueprint.get(2, 0, 0));
+		assertEquals("minecraft:birch_stairs[half=top]", blueprint.get(3, 0, 0));
+		assertEquals("minecraft:glass", blueprint.get(4, 0, 0));
+	}
+
+	@Test
+	void partialAutoFixSendsOnlyTheRemainingIdsToRepair() throws Exception {
+		Blueprint first = new Blueprint(1000, 64);
+		row(first, 0, "stone_brick", 3);
+		row(first, 1, "birch_wool", 2);
+		Blueprint second = new Blueprint(1000, 64);
+		row(second, 0, "stone_brick", 3);
+		row(second, 1, "white_wool", 2);
+		llm.reply("Here is your wall.\n```js\nwall('stone_brick', 'birch_wool');\n```")
+				.reply("```js\nwall('stone_brick', 'white_wool');\n```");
+		runner.okBlueprint(first).okBlueprint(second);
+		List<List<String>> validated = new CopyOnWriteArrayList<>();
+		String[] valid = {"minecraft:stone_bricks", "minecraft:white_wool", "minecraft:birch_wood"};
+
+		AgentOutcome outcome = await(agent().handle(request("wall", 2, registry(validated, valid))));
+
+		assertEquals(2, outcome.attempts());
+		assertSame(second, outcome.result().blueprint());
+		assertEquals(List.of("auto-fixed block 'stone_brick' -> 'stone_bricks'"), outcome.warnings());
+		assertEquals(List.of("minecraft:white_wool", "minecraft:stone_bricks"), second.palette());
+		// The repair lists only birch_wool; its suggestion birch_wood is another block family, so it is not applied.
+		List<String> suggestions = Suggest.closest("minecraft:birch_wool", Arrays.asList(valid), 3);
+		assertEquals("minecraft:birch_wood", suggestions.get(0));
+		String error = AiAgent.invalidBlocksMessage(List.of(new InvalidBlock("minecraft:birch_wool", "unknown block",
+				suggestions)));
+		ChatMessage repair = messagesOfCall(1).get(2);
+		assertEquals(ChatMessage.user(PromptBuilder.repairTurn(error, 2, 3)), repair);
+		assertFalse(repair.content().contains("stone_brick"));
+		assertEquals(List.of(2, 3, AiAgent.INVALID_BLOCKS_HEADER), listener.statuses(AgentStatus.REPAIRING).get(0).args());
+		assertEquals(List.of(
+				List.of("minecraft:stone_brick", "minecraft:birch_wool"), List.of("minecraft:stone_bricks"),
+				List.of("minecraft:stone_brick", "minecraft:white_wool"), List.of("minecraft:stone_bricks")), validated);
+		// The attempt that went to repair left its blueprint untouched.
+		assertEquals(List.of("minecraft:stone_brick", "minecraft:birch_wool"), first.palette());
+		assertEquals(List.of(ChatMessage.user("Steve: wall"),
+				ChatMessage.assistant("Here is your wall.\n\n```js\nwall('stone_brick', 'white_wool');\n```")),
+				conversation.messages());
+	}
+
+	@Test
+	void unknownBlocksAreRemovedAfterTheLastRepairAttempt() throws Exception {
+		Blueprint first = new Blueprint(1000, 64);
+		row(first, 0, "fancy_pillar", 2);
+		Blueprint last = new Blueprint(1000, 64);
+		row(last, 0, "fancy_pillar", 3);
+		row(last, 1, "stone_brick", 2);
+		row(last, 2, "stone", 4);
+		last.set(0, 5, 0, "glowing_thing");
+		llm.reply("A temple!\n```js\ntemple();\n```").reply("```js\ntemple2();\n```");
+		runner.okBlueprint(first).okBlueprint(last);
+		List<List<String>> validated = new CopyOnWriteArrayList<>();
+
+		AgentOutcome outcome = await(agent().handle(request("temple", 1,
+				registry(validated, "minecraft:stone", "minecraft:stone_bricks"))));
+
+		assertEquals(2, outcome.attempts());
+		assertNull(outcome.failure());
+		assertEquals("A temple!", outcome.chatText());
+		assertSame(last, outcome.result().blueprint());
+		assertEquals(List.of(
+				"auto-fixed block 'stone_brick' -> 'stone_bricks'",
+				"removed 3 blocks with unknown id 'fancy_pillar'",
+				"removed 1 block with unknown id 'glowing_thing'"), outcome.warnings());
+		assertEquals(6, last.size());
+		assertEquals(List.of("minecraft:stone", "minecraft:stone_bricks"), last.palette());
+		assertNull(last.get(0, 0, 0));
+		assertNull(last.get(0, 5, 0));
+		assertEquals("minecraft:stone_bricks", last.get(1, 0, 1));
+		assertEquals(List.of("REPAIRING[2, 2, " + AiAgent.INVALID_BLOCKS_HEADER + "]"),
+				listener.statuses(AgentStatus.REPAIRING).stream().map(Object::toString).toList());
+		assertEquals(List.of(ChatMessage.user("Steve: temple"),
+				ChatMessage.assistant("A temple!\n\n```js\ntemple2();\n```")), conversation.messages());
+	}
+
+	@Test
+	void removalFallbackFailsWhenOnlyAirWouldRemain() throws Exception {
+		Blueprint blueprint = new Blueprint(1000, 64);
+		row(blueprint, 0, "air", 3);
+		row(blueprint, 1, "fancy_pillar", 2);
+		llm.reply(GOOD_REPLY);
+		runner.okBlueprint(blueprint);
+
+		AgentOutcome outcome = await(agent().handle(request("tower", 0,
+				registry(new CopyOnWriteArrayList<>(), "minecraft:air"))));
+
+		String error = AiAgent.invalidBlocksMessage(List.of(
+				new InvalidBlock("minecraft:fancy_pillar", "unknown block", List.of())));
+		assertEquals(new AgentOutcome("Sure, here is a tower!\nEnjoy!", null, error, 1, List.of()), outcome);
+		assertEquals(List.of(ChatMessage.user("Steve: tower"), ChatMessage.assistant(GOOD_REPLY)),
+				conversation.messages());
+	}
+
+	@Test
+	void removalFallbackSucceedsWhenWorldActionsRemain() throws Exception {
+		Blueprint blueprint = new Blueprint(1000, 64);
+		blueprint.set(0, 0, 0, "fancy_pillar");
+		String reply = "Night time!\n```js\ntime('night');\nblock(0, 0, 0, 'fancy_pillar');\n```";
+		llm.reply(reply);
+		runner.okBlueprint(blueprint, new WorldAction.SetTime("night"));
+
+		AgentOutcome outcome = await(agent().handle(request("night", 0, registry(new CopyOnWriteArrayList<>()))));
+
+		assertNull(outcome.failure());
+		assertEquals(1, outcome.attempts());
+		assertTrue(blueprint.isEmpty());
+		assertEquals(List.of(new WorldAction.SetTime("night")), outcome.result().actions());
+		assertEquals(List.of("removed 1 block with unknown id 'fancy_pillar'"), outcome.warnings());
+		assertTrue(listener.statuses(AgentStatus.REPAIRING).isEmpty());
+		assertEquals(List.of(ChatMessage.user("Steve: night"), ChatMessage.assistant(reply)), conversation.messages());
+	}
+
+	@Test
+	void autoFixWorksWithPaletteOnlyResults() throws Exception {
+		llm.reply(GOOD_REPLY);
+		runner.ok("minecraft:stone_brick", "minecraft:stone_bricks", "minecraft:mystery");
+
+		AgentOutcome outcome = await(agent().handle(request("tower", 0,
+				registry(new CopyOnWriteArrayList<>(), "minecraft:stone_bricks"))));
+
+		assertEquals(List.of("auto-fixed block 'stone_brick' -> 'stone_bricks'",
+				"removed 1 block with unknown id 'mystery'"), outcome.warnings());
+		assertEquals(List.of("minecraft:stone_bricks"), runner.inspector().palette(outcome.result()));
+	}
+
+	@Test
+	void validatorFailureDuringAutoFixFailsTheFuture() {
+		IllegalStateException bug = new IllegalStateException("registry not ready");
+		AtomicInteger calls = new AtomicInteger();
+		llm.reply(GOOD_REPLY);
+		runner.ok("minecraft:stone_brick");
+
+		AgentTask task = agent().handle(request("tower", 2, ids -> {
+			if (calls.getAndIncrement() == 0) {
+				return List.of(new InvalidBlock("minecraft:stone_brick", "unknown block", List.of()));
+			}
+			throw bug;
+		}));
+
+		ExecutionException e = assertThrows(ExecutionException.class, () -> task.future().get(5, TimeUnit.SECONDS));
+		assertSame(bug, e.getCause());
+		assertEquals(0, conversation.size());
+	}
+
+	@Test
+	void laterTurnsSeeTheChatAndTheScriptThatWorked() throws Exception {
+		llm.reply("Building!\n```js\nfoo();\n```").reply("Oops, fixed:\n" + FIXED_REPLY).reply("Oak planks.");
+		runner.error("E1").ok("minecraft:oak_planks");
+
+		await(agent().handle(request("build a box", 2)));
+		await(agent().handle(request("what is it made of?", 2)));
+
+		List<ChatMessage> sent = messagesOfCall(2);
+		assertEquals(ChatMessage.user("Steve: build a box"), sent.get(0));
+		assertEquals(ChatMessage.assistant("Building!\n\n```js\n" + FIXED_SCRIPT + "\n```"), sent.get(1));
+		ParsedResponse stored = ResponseParser.parse(sent.get(1).content());
+		assertEquals("Building!", stored.chatText());
+		assertEquals(FIXED_SCRIPT, stored.script());
+	}
+
+	@Test
+	void repairedReplyFormat() {
+		assertEquals("Hi!\n\n```js\nfoo();\n```", AiAgent.repairedReply("Hi!", "foo();"));
+		assertEquals("```js\nfoo();\n```", AiAgent.repairedReply("", "foo();"));
+		assertEquals("```js\nfoo();\n```", AiAgent.repairedReply(null, "foo();"));
+		String script = "const s = `a`;\nlog('```');\nblock(0, 0, 0, 'stone');";
+		String stored = AiAgent.repairedReply("Chat", script);
+		assertEquals("Chat\n\n````js\n" + script + "\n````", stored);
+		ParsedResponse parsed = ResponseParser.parse(stored);
+		assertEquals("Chat", parsed.chatText());
+		assertEquals(script, parsed.script());
+		assertFalse(parsed.unterminatedCode());
+	}
+
+	@Test
+	void warningTexts() {
+		assertEquals("auto-fixed block 'stone_brick' -> 'lantern[hanging=true]'",
+				AiAgent.autoFixedWarning("minecraft:stone_brick", "minecraft:lantern[hanging=true]"));
+		assertEquals("auto-fixed block 'mymod:a' -> 'mymod:b'", AiAgent.autoFixedWarning("mymod:a", "mymod:b"));
+		assertEquals("removed 1 block with unknown id 'foo'", AiAgent.removedWarning(1, "minecraft:foo"));
+		assertEquals("removed 42 blocks with unknown id 'mymod:foo'", AiAgent.removedWarning(42, "mymod:foo"));
+	}
+
+	@Test
+	void outcomeWarningsAreNeverNullAndImmutable() {
+		assertEquals(List.of(), new AgentOutcome("", null, null, 1, null).warnings());
+		assertEquals(List.of(), new AgentOutcome("", null, null, 1).warnings());
+		assertEquals(new AgentOutcome("a", null, "f", 2), new AgentOutcome("a", null, "f", 2, List.of()));
+		List<String> source = new ArrayList<>(List.of("w"));
+		AgentOutcome outcome = new AgentOutcome("", null, null, 1, source);
+		source.add("x");
+		assertEquals(List.of("w"), outcome.warnings());
+		assertThrows(UnsupportedOperationException.class, () -> outcome.warnings().add("y"));
 	}
 }

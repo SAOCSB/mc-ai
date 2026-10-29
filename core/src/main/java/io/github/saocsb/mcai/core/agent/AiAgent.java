@@ -1,5 +1,8 @@
 package io.github.saocsb.mcai.core.agent;
 
+import io.github.saocsb.mcai.core.blueprint.BlockFixer;
+import io.github.saocsb.mcai.core.blueprint.BlockIds;
+import io.github.saocsb.mcai.core.blueprint.Blueprint;
 import io.github.saocsb.mcai.core.llm.ChatMessage;
 import io.github.saocsb.mcai.core.llm.LlmClient;
 import io.github.saocsb.mcai.core.llm.LlmRequest;
@@ -10,8 +13,14 @@ import io.github.saocsb.mcai.core.script.ScriptResult;
 import io.github.saocsb.mcai.core.script.ScriptRunner;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -19,6 +28,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.FutureTask;
 import java.util.function.LongSupplier;
+import java.util.stream.IntStream;
 
 /**
  * Orchestrates one player request:
@@ -30,14 +40,32 @@ import java.util.function.LongSupplier;
  * <li>If refused: outcome with failure, no repair. If no script: outcome with result null and failure null.</li>
  * <li>Run the script on {@code scriptExecutor} (status RUNNING_SCRIPT). Errors are: unterminated/truncated
  *     reply, {@link io.github.saocsb.mcai.core.script.ScriptException}, an empty blueprint with no world actions,
- *     or invalid palette entries from the validator (message lists each id, reason and suggestions).</li>
+ *     or invalid palette entries from the validator that could not be auto-fixed (message lists each such id,
+ *     reason and suggestions).</li>
  * <li>On error with repairs left: status REPAIRING, append the assistant reply + {@link PromptBuilder#repairTurn}
  *     to the request messages (not to the conversation) and call again. Otherwise return the failure.</li>
  * <li>On success or final failure, append to the conversation exactly two messages: the user turn (just the
  *     player's message text, prefixed with "{playerName}: ", without the context block) and the final assistant
- *     reply (the last reply received; on success the one whose script worked).</li>
+ *     reply: the last reply received, except after a success that needed repairs, where it is the first
+ *     reply's chat text followed by the script that worked as a {@code ```js} block (so later turns see both
+ *     what was said and what actually ran).</li>
  * </ol>
- * LLM exceptions complete the future exceptionally with the {@link io.github.saocsb.mcai.core.llm.LlmException}
+ *
+ * <p>Invalid block ids (still on the script executor, after the validator rejected some palette entries):
+ * <ol>
+ * <li>Auto-fix: for each invalid id the candidates are {@link BlockFixer#candidates} followed by
+ *     {@link BlockFixer#suggestionCandidates} of the validator's suggestions (same family, distance at most 2). All
+ *     candidates are validated in one extra validator call; the first valid candidate per id replaces it in the
+ *     blueprint ({@code replaceAll}) with the warning {@code "auto-fixed block 'x' -> 'y'"}.</li>
+ * <li>Ids without a valid candidate go to the repair round-trip (the message lists only those). On the last
+ *     attempt they are removed from the blueprint instead, with the warning
+ *     {@code "removed N blocks with unknown id 'x'"} per id; the request then succeeds if a non-air block or a
+ *     world action remains, and otherwise fails with the invalid-blocks message as before.</li>
+ * </ol>
+ * Warnings name ids without the {@code minecraft:} namespace and are returned in
+ * {@link AgentOutcome#warnings()} of successful outcomes (in the validator's order, fixes before removals).
+ *
+ * <p>LLM exceptions complete the future exceptionally with the {@link io.github.saocsb.mcai.core.llm.LlmException}
  * (unwrapped from CompletionException); nothing is added to the conversation then.
  *
  * <p>Details:
@@ -83,7 +111,7 @@ public final class AiAgent {
 		}
 	};
 
-	/** Read access to a result's blueprint; a seam so tests can run without a real {@code Blueprint}. */
+	/** Access to a result's blueprint; a seam so tests can run without a real {@code Blueprint}. */
 	interface BlueprintInspector {
 		BlueprintInspector DEFAULT = new BlueprintInspector() {
 			@Override
@@ -95,11 +123,43 @@ public final class AiAgent {
 			public List<String> palette(ScriptResult result) {
 				return result.blueprint() == null ? List.of() : result.blueprint().palette();
 			}
+
+			@Override
+			public int replaceAll(ScriptResult result, String from, String to) {
+				return result.blueprint() == null ? 0 : result.blueprint().replaceAll(from, to);
+			}
+
+			@Override
+			public Map<String, Integer> removeAll(ScriptResult result, Set<String> blockIds) {
+				Blueprint blueprint = result.blueprint();
+				if (blueprint == null || blockIds.isEmpty()) {
+					return Map.of();
+				}
+				Map<String, Integer> counts = new HashMap<>();
+				IntStream.Builder xyz = IntStream.builder();
+				blueprint.forEach((x, y, z, id) -> {
+					if (blockIds.contains(id)) {
+						counts.merge(id, 1, Integer::sum);
+						xyz.add(x).add(y).add(z);
+					}
+				});
+				int[] positions = xyz.build().toArray();
+				for (int i = 0; i < positions.length; i += 3) {
+					blueprint.remove(positions[i], positions[i + 1], positions[i + 2]);
+				}
+				return counts;
+			}
 		};
 
 		boolean isEmpty(ScriptResult result);
 
 		List<String> palette(ScriptResult result);
+
+		/** Replaces every use of palette entry {@code from} with {@code to}; returns the positions changed. */
+		int replaceAll(ScriptResult result, String from, String to);
+
+		/** Removes every position whose id is in {@code blockIds}; returns the positions removed per id. */
+		Map<String, Integer> removeAll(ScriptResult result, Set<String> blockIds);
 	}
 
 	private final LlmClient client;
@@ -154,6 +214,49 @@ public final class AiAgent {
 		return sb.toString();
 	}
 
+	/** {@code "auto-fixed block '<from>' -> '<to>'"} with ids shown by {@link #displayId}. */
+	static String autoFixedWarning(String from, String to) {
+		return "auto-fixed block '" + displayId(from) + "' -> '" + displayId(to) + "'";
+	}
+
+	/** {@code "removed <n> blocks with unknown id '<id>'"} ("1 block" for one). */
+	static String removedWarning(int count, String id) {
+		return "removed " + count + (count == 1 ? " block" : " blocks") + " with unknown id '" + displayId(id) + "'";
+	}
+
+	/** A block id for player-facing text: without the {@code minecraft:} namespace. */
+	static String displayId(String id) {
+		return id != null && id.startsWith("minecraft:") ? id.substring("minecraft:".length()) : String.valueOf(id);
+	}
+
+	/**
+	 * The assistant message stored after a success that needed repairs: the first reply's chat text, a blank line,
+	 * then the working script in a {@code js} fence (longer than any backtick run in the script); only the fenced
+	 * script when there is no chat text.
+	 */
+	static String repairedReply(String chatText, String script) {
+		String code = script == null ? "" : script;
+		int longest = 0;
+		for (int i = 0, run = 0; i < code.length(); i++) {
+			run = code.charAt(i) == '`' ? run + 1 : 0;
+			longest = Math.max(longest, run);
+		}
+		String fence = "`".repeat(Math.max(3, longest + 1));
+		String block = fence + "js\n" + code + "\n" + fence;
+		return chatText == null || chatText.isBlank() ? block : chatText + "\n\n" + block;
+	}
+
+	private static String normalizeOrSelf(String id) {
+		if (id == null) {
+			return null;
+		}
+		try {
+			return BlockIds.normalize(id);
+		} catch (IllegalArgumentException e) {
+			return id;
+		}
+	}
+
 	private static Throwable unwrap(Throwable t) {
 		Throwable e = t;
 		while ((e instanceof CompletionException || e instanceof ExecutionException) && e.getCause() != null) {
@@ -166,7 +269,10 @@ public final class AiAgent {
 		return reply == null || reply.isBlank() ? "(empty reply)" : reply;
 	}
 
-	private record Check(ScriptResult result, String error) {
+	private record Check(ScriptResult result, String error, List<String> warnings) {
+		static Check failed(String error) {
+			return new Check(null, error, List.of());
+		}
 	}
 
 	/** Progress state of one LLM call; guarded by the run's lock. */
@@ -206,6 +312,8 @@ public final class AiAgent {
 		private volatile int attempts;
 		private volatile String firstChat = "";
 		private volatile String lastReply = "";
+		/** The script most recently handed to the script executor. */
+		private volatile String lastScript = "";
 
 		Run(AgentRequest req) {
 			this.req = req;
@@ -374,10 +482,10 @@ public final class AiAgent {
 				}
 			}
 			if (refused) {
-				finish(new AgentOutcome(firstChat, null, FAILURE_REFUSED, attempts));
+				finish(new AgentOutcome(firstChat, null, FAILURE_REFUSED, attempts, List.of()), nonBlank(lastReply));
 			} else if (parsed.script() == null) {
 				if (first && !parsed.chatText().isEmpty()) {
-					finish(new AgentOutcome(firstChat, null, null, attempts));
+					finish(new AgentOutcome(firstChat, null, null, attempts, List.of()), nonBlank(lastReply));
 				} else {
 					onError(truncated ? TRUNCATED_ERROR : first ? EMPTY_REPLY_ERROR : NO_SCRIPT_ERROR);
 				}
@@ -389,6 +497,7 @@ public final class AiAgent {
 		}
 
 		private void runScript(String script) {
+			lastScript = script;
 			status(AgentStatus.RUNNING_SCRIPT);
 			FutureTask<Check> task = new FutureTask<>(() -> check(script)) {
 				@Override
@@ -414,7 +523,7 @@ public final class AiAgent {
 			}
 		}
 
-		/** Runs on the script executor: script, then the empty check, then block validation. */
+		/** Runs on the script executor: script, then the empty check, then block validation and auto-fixing. */
 		private Check check(String script) {
 			ScriptResult result;
 			try {
@@ -424,22 +533,102 @@ public final class AiAgent {
 					throw new CancellationException(e.getMessage());
 				}
 				String message = e.getMessage();
-				return new Check(null, message == null || message.isBlank() ? e.kind().name() : message);
+				return Check.failed(message == null || message.isBlank() ? e.kind().name() : message);
 			}
 			if (result == null) {
 				throw new IllegalStateException("ScriptRunner returned no result");
 			}
-			if ((result.actions() == null || result.actions().isEmpty()) && inspector.isEmpty(result)) {
-				return new Check(null, EMPTY_RESULT_ERROR);
+			if (!hasActions(result) && inspector.isEmpty(result)) {
+				return Check.failed(EMPTY_RESULT_ERROR);
 			}
 			List<String> palette = inspector.palette(result);
-			if (palette != null && !palette.isEmpty()) {
-				List<InvalidBlock> invalid = validator.validate(palette);
-				if (invalid != null && !invalid.isEmpty()) {
-					return new Check(null, invalidBlocksMessage(invalid));
+			if (palette == null || palette.isEmpty()) {
+				return new Check(result, null, List.of());
+			}
+			List<InvalidBlock> invalid = validator.validate(palette);
+			if (invalid == null || invalid.isEmpty()) {
+				return new Check(result, null, List.of());
+			}
+			List<InvalidBlock> unfixed = new ArrayList<>();
+			Map<String, String> fixes = findFixes(invalid, unfixed);
+			boolean lastAttempt = attempts >= maxAttempts;
+			if (!unfixed.isEmpty() && !lastAttempt) {
+				return Check.failed(invalidBlocksMessage(unfixed));
+			}
+			List<String> warnings = new ArrayList<>();
+			fixes.forEach((from, to) -> {
+				if (inspector.replaceAll(result, from, to) > 0) {
+					warnings.add(autoFixedWarning(from, to));
+				}
+			});
+			if (!unfixed.isEmpty()) {
+				Set<String> ids = new LinkedHashSet<>();
+				for (InvalidBlock b : unfixed) {
+					if (b.blockId() != null) {
+						ids.add(normalizeOrSelf(b.blockId()));
+					}
+				}
+				Map<String, Integer> removed = inspector.removeAll(result, ids);
+				for (String id : ids) {
+					int count = removed == null ? 0 : removed.getOrDefault(id, 0);
+					if (count > 0) {
+						warnings.add(removedWarning(count, id));
+					}
+				}
+				if (!hasActions(result) && !hasSolidBlocks(result)) {
+					return Check.failed(invalidBlocksMessage(unfixed));
 				}
 			}
-			return new Check(result, null);
+			return new Check(result, null, warnings);
+		}
+
+		/**
+		 * The first valid auto-fix candidate per invalid id (normalized invalid id -> replacement, in report order),
+		 * found with one validator call over all candidates. Entries without a valid candidate go to {@code unfixed}.
+		 */
+		private Map<String, String> findFixes(List<InvalidBlock> invalid, List<InvalidBlock> unfixed) {
+			Map<InvalidBlock, List<String>> options = new LinkedHashMap<>();
+			Set<String> all = new LinkedHashSet<>();
+			for (InvalidBlock b : invalid) {
+				if (b == null) {
+					continue;
+				}
+				String id = normalizeOrSelf(b.blockId());
+				Set<String> candidates = new LinkedHashSet<>(BlockFixer.candidates(id));
+				candidates.addAll(BlockFixer.suggestionCandidates(id, b.suggestions()));
+				options.put(b, List.copyOf(candidates));
+				all.addAll(candidates);
+			}
+			Set<String> rejected = new HashSet<>();
+			if (!all.isEmpty()) {
+				List<InvalidBlock> bad = validator.validate(List.copyOf(all));
+				if (bad != null) {
+					for (InvalidBlock b : bad) {
+						if (b != null && b.blockId() != null) {
+							rejected.add(normalizeOrSelf(b.blockId()));
+						}
+					}
+				}
+			}
+			Map<String, String> fixes = new LinkedHashMap<>();
+			options.forEach((b, candidates) -> {
+				String fix = candidates.stream().filter(c -> !rejected.contains(c)).findFirst().orElse(null);
+				if (fix == null) {
+					unfixed.add(b);
+				} else {
+					fixes.putIfAbsent(normalizeOrSelf(b.blockId()), fix);
+				}
+			});
+			return fixes;
+		}
+
+		private boolean hasActions(ScriptResult result) {
+			return result.actions() != null && !result.actions().isEmpty();
+		}
+
+		private boolean hasSolidBlocks(ScriptResult result) {
+			List<String> palette = inspector.palette(result);
+			return palette != null && palette.stream().anyMatch(id -> !BlockIds.isAir(id));
 		}
 
 		private void onScriptDone(FutureTask<Check> task) {
@@ -473,7 +662,8 @@ public final class AiAgent {
 				if (check.error() != null) {
 					onError(check.error());
 				} else {
-					finish(new AgentOutcome(firstChat, check.result(), null, attempts));
+					String stored = attempts > 1 ? repairedReply(firstChat, lastScript) : nonBlank(lastReply);
+					finish(new AgentOutcome(firstChat, check.result(), null, attempts, check.warnings()), stored);
 				}
 			} catch (Throwable t) {
 				fail(t);
@@ -482,7 +672,7 @@ public final class AiAgent {
 
 		private void onError(String error) {
 			if (attempts >= maxAttempts) {
-				finish(new AgentOutcome(firstChat, null, error, attempts));
+				finish(new AgentOutcome(firstChat, null, error, attempts, List.of()), nonBlank(lastReply));
 				return;
 			}
 			int attempt = attempts + 1;
@@ -492,7 +682,8 @@ public final class AiAgent {
 			callLlm();
 		}
 
-		private void finish(AgentOutcome outcome) {
+		/** Completes the request, recording the user turn and {@code assistantContent} in the conversation. */
+		private void finish(AgentOutcome outcome, String assistantContent) {
 			synchronized (lock) {
 				if (cancelled || finished) {
 					return;
@@ -503,7 +694,7 @@ public final class AiAgent {
 			try {
 				synchronized (conversation) {
 					conversation.add(ChatMessage.user(PromptBuilder.speakerLine(req.context().playerName(), req.message())));
-					conversation.add(ChatMessage.assistant(nonBlank(lastReply)));
+					conversation.add(ChatMessage.assistant(assistantContent));
 				}
 			} catch (Throwable t) {
 				future.completeExceptionally(t);
