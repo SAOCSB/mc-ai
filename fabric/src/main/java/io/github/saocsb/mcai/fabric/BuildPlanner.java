@@ -18,6 +18,9 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.levelgen.Heightmap;
 
@@ -39,6 +42,9 @@ public final class BuildPlanner {
 	private static final byte SOLID = 1;
 	private static final byte OTHER = 2;
 	private static final byte INVALID = -1;
+	private static final byte NO_COMPANION = 0;
+	private static final byte UPPER_HALF = 1;
+	private static final byte BED_HEAD = 2;
 
 	private BuildPlanner() {
 	}
@@ -77,16 +83,24 @@ public final class BuildPlanner {
 	 * Order: air (top down), then occluding blocks by y ascending, then everything else (torches, doors, panes,
 	 * plants, liquids...) by y ascending; insertion order is kept within a layer.
 	 *
+	 * <p>Fix-ups for common script mistakes: leaves are made persistent (so they never decay), and a lower door /
+	 * tall-plant half or a bed foot whose other half the script left out gets that half added.
+	 *
 	 * @param owner the requesting player, or null
 	 */
 	public static BuildJob plan(ServerLevel level, Blueprint blueprint, Transform transform, String name,
 			McBlockValidator validator, UUID owner, List<WorldAction> actions) {
 		Rotation rotation = toMinecraft(transform.rotation());
 		List<String> ids = blueprint.palette();
+		int n = ids.size();
 		Map<String, Integer> index = new HashMap<>();
-		BlockInput[] inputs = new BlockInput[ids.size()];
-		byte[] category = new byte[ids.size()];
-		for (int i = 0; i < ids.size(); i++) {
+		// Slots n..2n-1 hold the companion (upper half / bed head) of palette entry i at n + i.
+		BlockInput[] inputs = new BlockInput[2 * n];
+		byte[] category = new byte[2 * n];
+		byte[] companion = new byte[n];
+		int[] companionDx = new int[n];
+		int[] companionDz = new int[n];
+		for (int i = 0; i < n; i++) {
 			String id = ids.get(i);
 			index.put(id, i);
 			BlockStateParser.BlockResult result = validator.result(id);
@@ -94,12 +108,37 @@ public final class BuildPlanner {
 				category[i] = INVALID;
 				continue;
 			}
-			BlockState rotated = result.blockState().rotate(rotation);
-			inputs[i] = new BlockInput(rotated, rotateProperties(result.properties().keySet(), rotation, rotated), result.nbt());
+			BlockState local = result.blockState();
+			Set<Property<?>> defined = new HashSet<>(result.properties().keySet());
+			if (local.hasProperty(BlockStateProperties.PERSISTENT)) {
+				local = local.setValue(BlockStateProperties.PERSISTENT, true);
+				defined.add(BlockStateProperties.PERSISTENT);
+			}
+			BlockState rotated = local.rotate(rotation);
+			Set<Property<?>> rotatedDefined = rotateProperties(defined, rotation, rotated);
+			inputs[i] = new BlockInput(rotated, rotatedDefined, result.nbt());
 			category[i] = rotated.isAir() ? AIR : rotated.canOcclude() ? SOLID : OTHER;
+
+			if (rotated.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
+					&& rotated.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.LOWER) {
+				companion[i] = UPPER_HALF;
+				inputs[n + i] = companionInput(rotated.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER),
+						rotatedDefined, BlockStateProperties.DOUBLE_BLOCK_HALF);
+			} else if (rotated.hasProperty(BlockStateProperties.BED_PART) && local.hasProperty(BlockStateProperties.HORIZONTAL_FACING)
+					&& rotated.getValue(BlockStateProperties.BED_PART) == BedPart.FOOT) {
+				// The head lies one block toward the bed's facing, in the script's (unrotated) frame.
+				Direction facing = local.getValue(BlockStateProperties.HORIZONTAL_FACING);
+				companion[i] = BED_HEAD;
+				companionDx[i] = facing.getStepX();
+				companionDz[i] = facing.getStepZ();
+				inputs[n + i] = companionInput(rotated.setValue(BlockStateProperties.BED_PART, BedPart.HEAD), rotatedDefined,
+						BlockStateProperties.BED_PART);
+			}
+			category[n + i] = inputs[n + i] == null ? INVALID : OTHER;
 		}
 
-		Collector collector = new Collector(level, transform, index, category, blueprint.size());
+		Collector collector = new Collector(level, blueprint, transform, index, category, companion, companionDx, companionDz,
+				blueprint.size());
 		blueprint.forEach(collector);
 
 		long[] keys = Arrays.copyOf(collector.keys, collector.count);
@@ -112,6 +151,12 @@ public final class BuildPlanner {
 			palette[i] = collector.palette[seq];
 		}
 		return BuildJob.build(owner, name, level, transform, actions, positions, palette, inputs, collector.skipped);
+	}
+
+	private static BlockInput companionInput(BlockState state, Set<Property<?>> defined, Property<?> extra) {
+		Set<Property<?>> properties = new HashSet<>(defined);
+		properties.add(extra);
+		return new BlockInput(state, properties, null);
 	}
 
 	/**
@@ -139,22 +184,33 @@ public final class BuildPlanner {
 	/** Collects world positions and sort keys: category (8 bits) | y key (24 bits) | sequence (32 bits). */
 	private static final class Collector implements Blueprint.Visitor {
 		final ServerLevel level;
+		final Blueprint blueprint;
 		final Transform transform;
 		final Map<String, Integer> index;
 		final byte[] category;
+		final byte[] companion;
+		final int[] companionDx;
+		final int[] companionDz;
+		final int paletteSize;
 		final int minY;
 		final int maxY;
-		final long[] keys;
-		final long[] positions;
-		final int[] palette;
+		long[] keys;
+		long[] positions;
+		int[] palette;
 		int count;
 		int skipped;
 
-		Collector(ServerLevel level, Transform transform, Map<String, Integer> index, byte[] category, int size) {
+		Collector(ServerLevel level, Blueprint blueprint, Transform transform, Map<String, Integer> index, byte[] category,
+				byte[] companion, int[] companionDx, int[] companionDz, int size) {
 			this.level = level;
+			this.blueprint = blueprint;
 			this.transform = transform;
 			this.index = index;
 			this.category = category;
+			this.companion = companion;
+			this.companionDx = companionDx;
+			this.companionDz = companionDz;
+			this.paletteSize = companion.length;
 			this.minY = level.getMinY();
 			this.maxY = level.getMaxY();
 			this.keys = new long[size];
@@ -165,13 +221,38 @@ public final class BuildPlanner {
 		@Override
 		public void accept(int x, int y, int z, String blockId) {
 			Integer paletteIndex = index.get(blockId);
+			if (paletteIndex == null || category[paletteIndex] == INVALID) {
+				skipped++;
+				return;
+			}
+			if (!add(x, y, z, paletteIndex)) {
+				return;
+			}
+			byte kind = companion[paletteIndex];
+			if (kind == NO_COMPANION) {
+				return;
+			}
+			int cx = kind == BED_HEAD ? x + companionDx[paletteIndex] : x;
+			int cy = kind == UPPER_HALF ? y + 1 : y;
+			int cz = kind == BED_HEAD ? z + companionDz[paletteIndex] : z;
+			if (blueprint.get(cx, cy, cz) == null) {
+				add(cx, cy, cz, paletteSize + paletteIndex);
+			}
+		}
+
+		private boolean add(int x, int y, int z, int paletteIndex) {
 			int wx = transform.worldX(x, z);
 			int wy = transform.worldY(y);
 			int wz = transform.worldZ(x, z);
-			if (paletteIndex == null || category[paletteIndex] == INVALID || level.isOutsideBuildHeight(wy)
-					|| wx < -WORLD_LIMIT || wx >= WORLD_LIMIT || wz < -WORLD_LIMIT || wz >= WORLD_LIMIT) {
+			if (level.isOutsideBuildHeight(wy) || wx < -WORLD_LIMIT || wx >= WORLD_LIMIT || wz < -WORLD_LIMIT || wz >= WORLD_LIMIT) {
 				skipped++;
-				return;
+				return false;
+			}
+			if (count == keys.length) {
+				int capacity = Math.max(16, keys.length + (keys.length >> 1));
+				keys = Arrays.copyOf(keys, capacity);
+				positions = Arrays.copyOf(positions, capacity);
+				palette = Arrays.copyOf(palette, capacity);
 			}
 			byte c = category[paletteIndex];
 			long yKey = c == AIR ? maxY - wy : wy - minY;
@@ -179,6 +260,7 @@ public final class BuildPlanner {
 			positions[seq] = BlockPos.asLong(wx, wy, wz);
 			palette[seq] = paletteIndex;
 			keys[seq] = ((long) c << 56) | (yKey << 32) | seq;
+			return true;
 		}
 	}
 }

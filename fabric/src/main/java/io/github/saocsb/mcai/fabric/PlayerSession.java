@@ -3,6 +3,7 @@ package io.github.saocsb.mcai.fabric;
 import io.github.saocsb.mcai.core.agent.AgentTask;
 import io.github.saocsb.mcai.core.agent.Conversation;
 import io.github.saocsb.mcai.core.placement.Transform;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 
@@ -25,6 +26,9 @@ final class PlayerSession {
 	long requestId;
 	long lastRequestMillis;
 	PendingBuild pending;
+	/** The last action-bar status of the running request, re-sent periodically because the action bar fades. */
+	Component status;
+	int statusTick;
 	Transform lastTransform;
 	ResourceKey<Level> lastDimension;
 

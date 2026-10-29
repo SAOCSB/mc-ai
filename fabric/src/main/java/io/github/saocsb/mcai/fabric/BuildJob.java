@@ -151,7 +151,8 @@ public final class BuildJob {
 		BlockPos pos = BlockPos.of(source.position(i));
 		cursor++;
 		try {
-			level.setBlock(pos, source.state(i), Block.UPDATE_CLIENTS);
+			// Skipping block-entity side effects keeps containers the build placed from spilling their items.
+			level.setBlock(pos, source.state(i), Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS);
 			placed++;
 			remember(pos);
 		} catch (RuntimeException e) {

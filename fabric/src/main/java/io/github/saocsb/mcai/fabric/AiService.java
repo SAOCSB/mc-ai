@@ -72,6 +72,8 @@ public final class AiService implements BuildManager.Listener {
 	private static final int MAX_LOG_LINES = 200;
 	private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
 	private static final Set<String> LOCAL_HOSTS = Set.of("localhost", "127.0.0.1", "::1", "[::1]");
+	/** Re-send a request's status this often (ticks); the action bar fades after about three seconds. */
+	private static final int STATUS_REFRESH_TICKS = 40;
 
 	private final MinecraftServer server;
 	private final Path configFile;
@@ -144,6 +146,30 @@ public final class AiService implements BuildManager.Listener {
 		} catch (RuntimeException e) {
 			LOGGER.error("MC-AI build tick failed", e);
 		}
+		refreshStatuses();
+	}
+
+	private void refreshStatuses() {
+		int now = server.getTickCount();
+		if (now % 10 != 0) {
+			return;
+		}
+		for (PlayerSession session : sessions.values()) {
+			if (session.task == null || session.status == null || now - session.statusTick < STATUS_REFRESH_TICKS) {
+				continue;
+			}
+			ServerPlayer player = server.getPlayerList().getPlayer(session.playerId);
+			if (player != null) {
+				player.sendOverlayMessage(session.status);
+				session.statusTick = now;
+			}
+		}
+	}
+
+	private void showStatus(ServerPlayer player, PlayerSession session, String text) {
+		session.status = Texts.overlay(text);
+		session.statusTick = server.getTickCount();
+		player.sendOverlayMessage(session.status);
 	}
 
 	/** Runs {@code task} at the end of the current server tick (used by the chat trigger). */
@@ -231,7 +257,7 @@ public final class AiService implements BuildManager.Listener {
 		session.lastRequestMillis = now;
 		activeTasks.add(task);
 		LOGGER.info("{} -> {}: {}", player.getScoreboardName(), config.aiName, text);
-		player.sendOverlayMessage(Texts.overlay(tr(player, "status.thinking", config.aiName)));
+		showStatus(player, session, tr(player, "status.thinking", config.aiName));
 		task.future().whenComplete((outcome, failure) ->
 				onServerThread(() -> finishRequest(playerId, task, outcome, failure)));
 	}
@@ -269,7 +295,7 @@ public final class AiService implements BuildManager.Listener {
 			case REPAIRING -> tr(player, "status.repairing", name, intArg(args, 0), intArg(args, 1),
 					args != null && args.length > 2 ? String.valueOf(args[2]) : "");
 		};
-		player.sendOverlayMessage(Texts.overlay(text));
+		showStatus(player, session, text);
 	}
 
 	private void finishRequest(UUID playerId, AgentTask task, AgentOutcome outcome, Throwable failure) {
@@ -279,6 +305,7 @@ public final class AiService implements BuildManager.Listener {
 			return;
 		}
 		session.task = null;
+		session.status = null;
 		ServerPlayer player = server.getPlayerList().getPlayer(playerId);
 		if (player == null) {
 			return;
@@ -609,6 +636,7 @@ public final class AiService implements BuildManager.Listener {
 			return false;
 		}
 		session.task = null;
+		session.status = null;
 		session.requestId++;
 		activeTasks.remove(task);
 		cancelQuietly(task);

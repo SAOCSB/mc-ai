@@ -20,6 +20,9 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.StairBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 
 import java.util.List;
 
@@ -88,6 +91,39 @@ public class McAiGameTest {
 				}
 			}
 		}
+		helper.succeed();
+	}
+
+	@GameTest
+	public void buildFixesLeavesDoorsAndBeds(GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		Blueprint blueprint = new Blueprint(1_000, 64);
+		blueprint.set(0, 0, 0, "oak_leaves");
+		blueprint.set(2, 0, 0, "oak_door[facing=south]");
+		blueprint.set(4, 0, 2, "red_bed[facing=north]");
+		// Already complete door: the planner must not add a second upper half or move anything.
+		blueprint.set(0, 0, 2, "spruce_door[facing=south,half=lower]");
+		blueprint.set(0, 1, 2, "spruce_door[facing=south,half=upper]");
+		Transform transform = transformAt(helper, new BlockPos(2, 1, 3), Rotation.NONE);
+		BuildJob job = BuildPlanner.plan(level, blueprint, transform, "fixups", validator(helper), null, List.of());
+		helper.assertValueEqual(job.total(), 7, "planned entries (5 written + door top + bed head)");
+		job.runToCompletion(true);
+
+		BlockState leaves = level.getBlockState(world(transform, 0, 0, 0));
+		helper.assertTrue(leaves.getBlock() == Blocks.OAK_LEAVES, "leaves placed");
+		helper.assertTrue(leaves.getValue(BlockStateProperties.PERSISTENT), "leaves must be persistent");
+
+		BlockState doorTop = level.getBlockState(world(transform, 2, 1, 0));
+		helper.assertTrue(doorTop.getBlock() == Blocks.OAK_DOOR, "upper door half added");
+		helper.assertValueEqual(doorTop.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF), DoubleBlockHalf.UPPER, "door half");
+		helper.assertValueEqual(level.getBlockState(world(transform, 2, 0, 0)).getValue(BlockStateProperties.DOUBLE_BLOCK_HALF),
+				DoubleBlockHalf.LOWER, "lower door half kept");
+
+		BlockState bedHead = level.getBlockState(world(transform, 4, 0, 1));
+		helper.assertTrue(bedHead.getBlock() == Blocks.RED_BED, "bed head added one block north of the foot");
+		helper.assertValueEqual(bedHead.getValue(BlockStateProperties.BED_PART), BedPart.HEAD, "bed part");
+
+		helper.assertTrue(level.getBlockState(world(transform, 0, 1, 2)).getBlock() == Blocks.SPRUCE_DOOR, "complete door kept");
 		helper.succeed();
 	}
 
