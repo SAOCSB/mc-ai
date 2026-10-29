@@ -33,7 +33,9 @@ Add `ground:'surface'` to use the terrain height at the build centre instead of 
 
 ## API
 
-These are the only globals, plus standard JavaScript (`Math`, arrays, loops, functions, `let`/`const`, arrow functions, template strings). There are no `require`, `import`, timers or Java. Shape functions return the number of blocks they wrote.
+These are the only globals, plus standard JavaScript: `Math`, arrays, objects, `Map`/`Set`, loops, functions, `let`/`const`, arrow functions, template strings, destructuring and default parameters. There are no `require`, `import`, timers or Java. Shape functions return the number of blocks they wrote.
+
+The engine does not support `class`, `async`/`await`, rest elements in destructuring (`[a, ...rest]`) or spread in `new`. Use plain functions and objects instead. Closures created inside a `for (let ...)` loop all see the final value, so pass the value as a function argument instead.
 
 ```
 block(x,y,z,id)                         one block ('air' clears)

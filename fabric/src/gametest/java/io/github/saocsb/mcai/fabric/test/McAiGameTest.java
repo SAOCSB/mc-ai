@@ -9,6 +9,7 @@ import io.github.saocsb.mcai.core.script.WorldAction;
 import io.github.saocsb.mcai.fabric.BuildJob;
 import io.github.saocsb.mcai.fabric.BuildPlanner;
 import io.github.saocsb.mcai.fabric.CommandRunner;
+import io.github.saocsb.mcai.fabric.McAiMod;
 import io.github.saocsb.mcai.fabric.McBlockValidator;
 import io.github.saocsb.mcai.fabric.UndoRecord;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
@@ -28,6 +29,14 @@ import java.util.List;
 
 /** Server game tests for the Minecraft adapter. All blocks stay inside the default empty 8x8x8 structure, above y = 0. */
 public class McAiGameTest {
+	@GameTest
+	public void serviceStartsWithTheServer(GameTestHelper helper) {
+		// Covers config loading (Gson), the script engine and the LLM client setup in a real server.
+		helper.assertTrue(McAiMod.service() != null, "AiService should be running after SERVER_STARTED");
+		helper.assertTrue(McAiMod.service().config() != null, "config loaded");
+		helper.succeed();
+	}
+
 	@GameTest
 	public void validatorAcceptsKnownBlocksAndRejectsUnknown(GameTestHelper helper) {
 		McBlockValidator validator = validator(helper);

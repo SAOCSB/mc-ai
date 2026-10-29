@@ -13,7 +13,11 @@ This is the exact contract between the script engine (`core/.../script/ScriptEng
 - **Argument count.** Too few arguments throws `TypeError: <fn>(): expected <n> arguments (<names>), got <k>`. Extra arguments are ignored.
 - **Limits.** Exceeding the block budget, the span limit, the action limit or the time limit aborts the script with a clear message.
 - **Scope.** The script runs inside a function, so top-level `const`/`let`/`function` names may shadow API names. The return value is ignored.
-- **Supported JavaScript.** Rhino 1.9 in ES6 mode: `let`/`const`, arrow functions, template literals, destructuring, default parameters, spread, `for...of`, `Map`/`Set`, classes and `**`. See the engine tests for the exact matrix.
+- **Supported JavaScript.** Rhino 1.9 in ES6 mode, with source rewrites for Rhino's gaps:
+  - **Works:** `let`/`const` (the engine rewrites `const` to `let`), arrow functions, template literals, destructuring (including in `for...of`), default and rest parameters, spread in array literals, object spread, spread in calls on named or dotted callees, `for...of`, `Map`/`Set`/`Symbol`/generators, `?.`, `??` and `**`.
+  - **Not supported:** `class`, `async`/`await`, rest elements in destructuring, and spread in `new` or on computed callees.
+  - **Caveat:** closures created in a `for (let ...)` loop all see the last value.
+  - The exact matrix is in `EsFeatureMatrixTest`.
 
 ## Blocks
 

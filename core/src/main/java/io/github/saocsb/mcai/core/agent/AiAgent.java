@@ -266,13 +266,32 @@ public final class AiAgent {
 		return e;
 	}
 
+	/** The last lines the failed script logged, formatted for the repair prompt; null when it logged nothing. */
+	static String logTail(List<String> logs) {
+		if (logs == null || logs.isEmpty()) {
+			return null;
+		}
+		int from = Math.max(0, logs.size() - 20);
+		StringBuilder out = new StringBuilder("Script log before the error");
+		out.append(from > 0 ? " (last 20 lines):" : ":");
+		for (String line : logs.subList(from, logs.size())) {
+			out.append('\n').append(line);
+		}
+		return out.toString();
+	}
+
 	private static String nonBlank(String reply) {
 		return reply == null || reply.isBlank() ? "(empty reply)" : reply;
 	}
 
-	private record Check(ScriptResult result, String error, List<String> warnings) {
+	/** @param detail extra context for the model only (e.g. the script's log output), or null */
+	private record Check(ScriptResult result, String error, String detail, List<String> warnings) {
 		static Check failed(String error) {
-			return new Check(null, error, List.of());
+			return new Check(null, error, null, List.of());
+		}
+
+		static Check failed(String error, String detail) {
+			return new Check(null, error, detail, List.of());
 		}
 	}
 
@@ -534,7 +553,7 @@ public final class AiAgent {
 					throw new CancellationException(e.getMessage());
 				}
 				String message = e.getMessage();
-				return Check.failed(message == null || message.isBlank() ? e.kind().name() : message);
+				return Check.failed(message == null || message.isBlank() ? e.kind().name() : message, logTail(e.logs()));
 			}
 			if (result == null) {
 				throw new IllegalStateException("ScriptRunner returned no result");
@@ -544,11 +563,11 @@ public final class AiAgent {
 			}
 			List<String> palette = inspector.palette(result);
 			if (palette == null || palette.isEmpty()) {
-				return new Check(result, null, List.of());
+				return new Check(result, null, null, List.of());
 			}
 			List<InvalidBlock> invalid = validator.validate(palette);
 			if (invalid == null || invalid.isEmpty()) {
-				return new Check(result, null, List.of());
+				return new Check(result, null, null, List.of());
 			}
 			List<InvalidBlock> unfixed = new ArrayList<>();
 			Map<String, String> fixes = findFixes(invalid, unfixed);
@@ -580,7 +599,7 @@ public final class AiAgent {
 					return Check.failed(invalidBlocksMessage(unfixed));
 				}
 			}
-			return new Check(result, null, warnings);
+			return new Check(result, null, null, warnings);
 		}
 
 		/**
@@ -661,7 +680,7 @@ public final class AiAgent {
 			}
 			try {
 				if (check.error() != null) {
-					onError(check.error());
+					onError(check.error(), check.detail());
 				} else {
 					String stored = attempts > 1 ? repairedReply(firstChat, lastScript) : nonBlank(lastReply);
 					finish(new AgentOutcome(firstChat, check.result(), null, attempts, check.warnings()), stored);
@@ -672,6 +691,10 @@ public final class AiAgent {
 		}
 
 		private void onError(String error) {
+			onError(error, null);
+		}
+
+		private void onError(String error, String detail) {
 			if (attempts >= maxAttempts) {
 				finish(new AgentOutcome(firstChat, null, error, attempts, List.of()), nonBlank(lastReply));
 				return;
@@ -679,7 +702,8 @@ public final class AiAgent {
 			int attempt = attempts + 1;
 			status(AgentStatus.REPAIRING, attempt, maxAttempts, shortError(error));
 			messages.add(ChatMessage.assistant(nonBlank(lastReply)));
-			messages.add(ChatMessage.user(PromptBuilder.repairTurn(error, attempt, maxAttempts)));
+			String feedback = detail == null ? error : error + "\n\n" + detail;
+			messages.add(ChatMessage.user(PromptBuilder.repairTurn(feedback, attempt, maxAttempts)));
 			callLlm();
 		}
 

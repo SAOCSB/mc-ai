@@ -772,10 +772,13 @@ public final class AiService implements BuildManager.Listener {
 		}
 	}
 
+	/** Worker threads get a large stack: deeply recursive build scripts run on them. */
+	private static final long WORKER_STACK_BYTES = 32L * 1024 * 1024;
+
 	private static ThreadFactory workerThreads() {
 		AtomicInteger counter = new AtomicInteger();
 		return runnable -> {
-			Thread thread = new Thread(runnable, "mcai-worker-" + counter.incrementAndGet());
+			Thread thread = new Thread(null, runnable, "mcai-worker-" + counter.incrementAndGet(), WORKER_STACK_BYTES);
 			thread.setDaemon(true);
 			return thread;
 		};
