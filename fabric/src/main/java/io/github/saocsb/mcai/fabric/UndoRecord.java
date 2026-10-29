@@ -7,34 +7,58 @@ import net.minecraft.world.level.block.state.BlockState;
 import java.util.Arrays;
 
 /**
- * The world states a build replaced, in placement order, so the build can be reverted.
- * Positions are packed with {@link BlockPos#asLong(int, int, int)}. Not thread-safe (server thread only).
+ * What a build changed, in placement order, so the build can be reverted: for each position the state that was
+ * there before and the state the build left there. Positions are packed with {@link BlockPos#asLong(int, int, int)}.
+ * The id is the id of the {@link BuildJob} that made the record. Not thread-safe (server thread only).
  */
 public final class UndoRecord {
+	private final long id;
 	private final String name;
 	private final ServerLevel level;
 	private long[] positions;
-	private BlockState[] states;
+	private BlockState[] previous;
+	private BlockState[] placed;
 	private int size;
 
-	public UndoRecord(String name, ServerLevel level, int expectedSize) {
+	public UndoRecord(long id, String name, ServerLevel level, int expectedSize) {
+		this.id = id;
 		this.name = name;
 		this.level = level;
 		int capacity = Math.max(16, expectedSize);
 		this.positions = new long[capacity];
-		this.states = new BlockState[capacity];
+		this.previous = new BlockState[capacity];
+		this.placed = new BlockState[capacity];
 	}
 
-	/** Records the state that was at {@code pos} before the build changed it. */
-	public void add(BlockPos pos, BlockState previous) {
+	/**
+	 * Records a change at {@code pos}.
+	 *
+	 * @param before the state before the build changed it
+	 * @param after  the state the build placed (updated with {@link #setLastPlaced} once known)
+	 */
+	public void add(BlockPos pos, BlockState before, BlockState after) {
 		if (size == positions.length) {
 			int capacity = positions.length + (positions.length >> 1) + 16;
 			positions = Arrays.copyOf(positions, capacity);
-			states = Arrays.copyOf(states, capacity);
+			previous = Arrays.copyOf(previous, capacity);
+			placed = Arrays.copyOf(placed, capacity);
 		}
 		positions[size] = pos.asLong();
-		states[size] = previous;
+		previous[size] = before;
+		placed[size] = after;
 		size++;
+	}
+
+	/** Replaces the placed state of the newest entry (read back from the world after placing). */
+	public void setLastPlaced(BlockState after) {
+		if (size > 0) {
+			placed[size - 1] = after;
+		}
+	}
+
+	/** The id of the build job that made this record. */
+	public long id() {
+		return id;
 	}
 
 	public String name() {
@@ -60,15 +84,21 @@ public final class UndoRecord {
 
 	/** Recorded (previous) state of entry {@code i}. */
 	public BlockState state(int i) {
-		return states[i];
+		return previous[i];
 	}
 
-	/** A record holding only the first {@code count} entries (used when an undo is interrupted). */
+	/** The state the build placed at entry {@code i}. */
+	public BlockState placed(int i) {
+		return placed[i];
+	}
+
+	/** A record holding only the first {@code count} entries, with the same id (used when an undo is interrupted). */
 	public UndoRecord prefix(int count) {
 		int n = Math.max(0, Math.min(count, size));
-		UndoRecord copy = new UndoRecord(name, level, n);
+		UndoRecord copy = new UndoRecord(id, name, level, n);
 		System.arraycopy(positions, 0, copy.positions, 0, n);
-		System.arraycopy(states, 0, copy.states, 0, n);
+		System.arraycopy(previous, 0, copy.previous, 0, n);
+		System.arraycopy(placed, 0, copy.placed, 0, n);
 		copy.size = n;
 		return copy;
 	}

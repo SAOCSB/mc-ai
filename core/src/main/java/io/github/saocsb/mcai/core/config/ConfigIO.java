@@ -28,8 +28,17 @@ import java.util.Set;
  * (no comments); untyped numbers in {@code extraBody} keep integers as integers.
  */
 public final class ConfigIO {
-	/** Current {@link ModConfig#configVersion}. */
-	public static final int CONFIG_VERSION = 1;
+	/**
+	 * Current {@link ModConfig#configVersion}. Version 2 removed {@code particle} and {@code say} from the default
+	 * command whitelist; loading an older file removes them from its whitelist once.
+	 */
+	public static final int CONFIG_VERSION = 2;
+
+	private static final System.Logger LOG = System.getLogger(ConfigIO.class.getName());
+	/** Provider fields whose maps are merged key by key with a preset's (user keys win, missing preset keys are added). */
+	private static final Set<String> MERGED_MAPS = Set.of("extraBody", "extraHeaders");
+	/** Commands dropped from whitelists written before config version 2. */
+	private static final Set<String> REMOVED_IN_V2 = Set.of("particle", "say", "/particle", "/say");
 
 	private static final Gson GSON = new GsonBuilder()
 			.setPrettyPrinting()
@@ -48,11 +57,23 @@ public final class ConfigIO {
 	 * Loads the config, creating it with defaults (all presets) if missing. Missing presets are added,
 	 * null sections/collections replaced with defaults, numbers clamped to sane ranges, and an unknown
 	 * active provider reset to the default; the normalized result is written back so new options appear.
-	 * An empty file counts as missing. The file is only rewritten when the normalized text differs.
+	 * An empty file counts as missing. The file is only rewritten when the normalized text differs; a failed
+	 * write-back is logged and does not fail the load.
 	 *
-	 * @throws IOException if the file cannot be read/written or is not valid JSON (the file is then left untouched)
+	 * @throws IOException if the file cannot be read or is not valid JSON (the file is then left untouched)
 	 */
 	public static ModConfig load(Path file) throws IOException {
+		return load(file, ConfigIO::save);
+	}
+
+	/** Writes a config file; {@link #save} outside tests. */
+	@FunctionalInterface
+	interface Saver {
+		void save(Path file, ModConfig config) throws IOException;
+	}
+
+	/** {@link #load(Path)} with the write-back done by {@code saver}. */
+	static ModConfig load(Path file, Saver saver) throws IOException {
 		String text;
 		try {
 			text = Files.readString(file, StandardCharsets.UTF_8);
@@ -69,7 +90,12 @@ public final class ConfigIO {
 		normalize(config);
 		String normalized = toJson(config);
 		if (text == null || !normalized.equals(text)) {
-			save(file, config);
+			try {
+				saver.save(file, config);
+			} catch (IOException | RuntimeException e) {
+				LOG.log(System.Logger.Level.WARNING, "Could not write the normalized config back to " + file
+						+ "; using it without saving", e);
+			}
 		}
 		return config;
 	}
@@ -103,7 +129,9 @@ public final class ConfigIO {
 
 	/**
 	 * Parses the config. Fields missing from an entry whose id is a preset are taken from that preset,
-	 * so {@code "deepseek": {"apiKey": "..."}} keeps the preset's URL and model.
+	 * so {@code "deepseek": {"apiKey": "..."}} keeps the preset's URL and model. {@code extraBody} and
+	 * {@code extraHeaders} are merged key by key: the user's keys win (a {@code null} value still removes a field)
+	 * and preset keys the user did not mention are added.
 	 *
 	 * @return the config, or null for a JSON {@code null} document
 	 */
@@ -125,7 +153,9 @@ public final class ConfigIO {
 					JsonElement user = entries.get(id);
 					if (preset != null && user.isJsonObject()) {
 						JsonObject merged = GSON.toJsonTree(preset).getAsJsonObject();
-						user.getAsJsonObject().entrySet().forEach(e -> merged.add(e.getKey(), e.getValue()));
+						for (Map.Entry<String, JsonElement> e : user.getAsJsonObject().entrySet()) {
+							merged.add(e.getKey(), mergeField(e.getKey(), e.getValue(), merged.get(e.getKey())));
+						}
 						entries.add(id, merged);
 					}
 				}
@@ -137,6 +167,23 @@ public final class ConfigIO {
 		}
 	}
 
+	/**
+	 * The value of a user field merged over a preset's: for {@code extraBody}/{@code extraHeaders} objects the preset
+	 * keys the user left out are added; every other field (and a non-object value) is the user's as written.
+	 */
+	private static JsonElement mergeField(String key, JsonElement user, JsonElement preset) {
+		if (!MERGED_MAPS.contains(key) || !user.isJsonObject() || preset == null || !preset.isJsonObject()) {
+			return user;
+		}
+		JsonObject map = user.getAsJsonObject().deepCopy();
+		for (Map.Entry<String, JsonElement> e : preset.getAsJsonObject().entrySet()) {
+			if (!map.has(e.getKey())) {
+				map.add(e.getKey(), e.getValue());
+			}
+		}
+		return map;
+	}
+
 	/** The JSON text {@link #save} writes. */
 	static String toJson(ModConfig config) {
 		return GSON.toJson(config) + "\n";
@@ -144,6 +191,7 @@ public final class ConfigIO {
 
 	/** Fills in missing parts and clamps values in place (see {@link #load}). */
 	static void normalize(ModConfig c) {
+		int loadedVersion = c.configVersion;
 		c.configVersion = CONFIG_VERSION;
 		if (c.build == null) {
 			c.build = new ModConfig.Build();
@@ -206,6 +254,8 @@ public final class ConfigIO {
 		b.frontDistance = Math.clamp(b.frontDistance, 0, 64);
 		b.undoHistory = Math.clamp(b.undoHistory, 0, 50);
 		b.confirmAboveBlocks = Math.max(0, b.confirmAboveBlocks);
+		b.maxDistance = Math.clamp(b.maxDistance, 8, 4096);
+		b.deniedBlocks = b.deniedBlocks == null ? new ArrayList<>(ModConfig.DEFAULT_DENIED_BLOCKS) : nonBlank(b.deniedBlocks);
 
 		ModConfig.Commands cmd = c.commands;
 		cmd.permissionLevel = Math.clamp(cmd.permissionLevel, 0, 4);
@@ -214,6 +264,9 @@ public final class ConfigIO {
 			cmd.whitelist = new ModConfig.Commands().whitelist;
 		} else {
 			cmd.whitelist = nonBlank(cmd.whitelist);
+			if (loadedVersion < 2) {
+				cmd.whitelist.removeIf(command -> REMOVED_IN_V2.contains(command.toLowerCase(Locale.ROOT)));
+			}
 		}
 
 		ModConfig.Permissions p = c.permissions;

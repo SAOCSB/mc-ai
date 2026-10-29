@@ -55,7 +55,9 @@ public final class McAiMod implements ModInitializer {
 		});
 		ServerMessageEvents.ALLOW_CHAT_MESSAGE.register((message, sender, boundChatType) -> {
 			AiService current = service;
-			if (current == null) {
+			// Chat produced by the AI's own commands (Fabric fires this event for /say and similar run as the
+			// player) must never start another AI request.
+			if (current == null || CommandRunner.isExecuting()) {
 				return true;
 			}
 			try {

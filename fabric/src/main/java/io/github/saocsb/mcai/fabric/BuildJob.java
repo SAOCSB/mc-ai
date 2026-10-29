@@ -5,6 +5,8 @@ import io.github.saocsb.mcai.core.script.WorldAction;
 import net.minecraft.commands.arguments.blocks.BlockInput;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Container;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import org.slf4j.Logger;
@@ -13,25 +15,37 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A block-placement task run a slice at a time by {@link BuildManager} on the server thread.
  *
- * <p>A BUILD job places precomputed entries (see {@link BuildPlanner}) and records every replaced state in
- * {@link #record()}. An UNDO job restores an {@link UndoRecord} in reverse order. Blocks are written with
- * {@link Block#UPDATE_CLIENTS}: clients are updated and connecting shapes recomputed, but neighbours get no
- * block updates (no falling sand, no popping torches mid-build). With {@code updateShapes == false} builds add
- * {@link Block#UPDATE_KNOWN_SHAPE} and keep states exactly as written.
+ * <p>A BUILD job places precomputed entries (see {@link BuildPlanner}) and records, for every position it writes,
+ * the state it replaced and the state it left in {@link #record()}. Positions outside the world border, under the
+ * requester's spawn protection or (optionally) holding a block entity are skipped. Blocks are written with
+ * {@link Block#UPDATE_CLIENTS} and {@link Block#UPDATE_SUPPRESS_DROPS}: clients are updated and connecting shapes
+ * recomputed, but neighbours get no block updates (no falling sand, no popping torches mid-build). With
+ * {@code updateShapes == false} builds add {@link Block#UPDATE_KNOWN_SHAPE} and keep states exactly as written.
+ *
+ * <p>An UNDO job restores an {@link UndoRecord} in reverse order, but only where the world still holds the block
+ * the build placed (players may have replaced it since) and never over a container that holds items. It writes with
+ * {@link #UNDO_FLAGS}, so neighbours are left alone and nothing drops (door or tall-flower halves, container
+ * contents).
  */
 public final class BuildJob {
 	private static final Logger LOGGER = LoggerFactory.getLogger("MC-AI");
 	private static final int RECENT = 4;
+	private static final AtomicLong IDS = new AtomicLong();
+	/** Flags for restoring blocks: no shape updates, no drops, no block-entity side effects. */
+	static final int UNDO_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS
+			| Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS;
 
 	public enum Kind {
 		BUILD,
 		UNDO
 	}
 
+	private final long id;
 	private final Kind kind;
 	private final UUID owner;
 	private final String name;
@@ -48,9 +62,12 @@ public final class BuildJob {
 
 	private final int total;
 	private final int skippedPlanning;
+	private ServerPlayer requester;
 	private int cursor;
 	private int placed;
 	private int skippedProtected;
+	private int skippedRestricted;
+	private int skippedChanged;
 	private int skippedErrors;
 	private long startMillis;
 	private long endMillis;
@@ -58,8 +75,10 @@ public final class BuildJob {
 	private boolean silent;
 	private final List<BlockPos> recent = new ArrayList<>(RECENT);
 
-	private BuildJob(Kind kind, UUID owner, String name, ServerLevel level, Transform transform, List<WorldAction> actions,
-			long[] positions, int[] paletteIndex, BlockInput[] palette, UndoRecord source, int skippedPlanning) {
+	private BuildJob(long id, Kind kind, UUID owner, String name, ServerLevel level, Transform transform,
+			List<WorldAction> actions, long[] positions, int[] paletteIndex, BlockInput[] palette, UndoRecord source,
+			int skippedPlanning) {
+		this.id = id;
 		this.kind = kind;
 		this.owner = owner;
 		this.name = name;
@@ -72,19 +91,29 @@ public final class BuildJob {
 		this.source = source;
 		this.skippedPlanning = skippedPlanning;
 		this.total = kind == Kind.BUILD ? positions.length : source.size();
-		this.record = kind == Kind.BUILD ? new UndoRecord(name, level, total) : null;
+		this.record = kind == Kind.BUILD ? new UndoRecord(id, name, level, total) : null;
 	}
 
 	/** A build job; {@code positions[i]} (packed) gets {@code palette[paletteIndex[i]]}. Used by {@link BuildPlanner}. */
 	static BuildJob build(UUID owner, String name, ServerLevel level, Transform transform, List<WorldAction> actions,
 			long[] positions, int[] paletteIndex, BlockInput[] palette, int skippedPlanning) {
-		return new BuildJob(Kind.BUILD, owner, name, level, transform, actions, positions, paletteIndex, palette, null,
-				skippedPlanning);
+		return new BuildJob(IDS.incrementAndGet(), Kind.BUILD, owner, name, level, transform, actions, positions,
+				paletteIndex, palette, null, skippedPlanning);
 	}
 
-	/** A job that restores {@code record} (newest change first). {@code owner} may be null (tests). */
+	/** A job that restores {@code record} (newest change first); it has the record's id. {@code owner} may be null (tests). */
 	public static BuildJob undo(UndoRecord record, UUID owner) {
-		return new BuildJob(Kind.UNDO, owner, record.name(), record.level(), null, List.of(), null, null, null, record, 0);
+		return new BuildJob(record.id(), Kind.UNDO, owner, record.name(), record.level(), null, List.of(), null, null,
+				null, record, 0);
+	}
+
+	/**
+	 * The player whose spawn-protection rights apply to a BUILD job (null: not checked, e.g. in tests). Positions
+	 * {@link net.minecraft.server.MinecraftServer#isUnderSpawnProtection} reports for this player are skipped.
+	 */
+	public BuildJob requester(ServerPlayer player) {
+		this.requester = player;
+		return this;
 	}
 
 	/**
@@ -130,13 +159,24 @@ public final class BuildJob {
 		BlockInput input = palette[paletteIndex[cursor]];
 		cursor++;
 		try {
+			if (!level.getWorldBorder().isWithinBounds(pos)
+					|| requester != null && level.getServer().isUnderSpawnProtection(level, pos, requester)) {
+				skippedRestricted++;
+				return;
+			}
 			if (protectBlockEntities && level.getBlockEntity(pos) != null) {
 				skippedProtected++;
 				return;
 			}
 			BlockState previous = level.getBlockState(pos);
-			record.add(pos, previous);
-			input.place(level, pos, updateShapes ? Block.UPDATE_CLIENTS : Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+			record.add(pos, previous, previous);
+			int flags = (updateShapes ? Block.UPDATE_CLIENTS : Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE)
+					| Block.UPDATE_SUPPRESS_DROPS;
+			try {
+				input.place(level, pos, flags);
+			} finally {
+				record.setLastPlaced(level.getBlockState(pos));
+			}
 			placed++;
 			remember(pos);
 		} catch (RuntimeException e) {
@@ -151,8 +191,11 @@ public final class BuildJob {
 		BlockPos pos = BlockPos.of(source.position(i));
 		cursor++;
 		try {
-			// Skipping block-entity side effects keeps containers the build placed from spilling their items.
-			level.setBlock(pos, source.state(i), Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS);
+			if (!isStillPlaced(level.getBlockState(pos), source.placed(i)) || holdsItems(pos)) {
+				skippedChanged++;
+				return;
+			}
+			level.setBlock(pos, source.state(i), UNDO_FLAGS);
 			placed++;
 			remember(pos);
 		} catch (RuntimeException e) {
@@ -162,12 +205,31 @@ public final class BuildJob {
 		}
 	}
 
+	/**
+	 * Whether an undo may restore a position: the world still holds the block the build placed there. The block is
+	 * compared, not the full state, because connecting blocks, leaves, doors and the like change their own state
+	 * after placement (shape updates, decay distance, opening); a different block means someone replaced it.
+	 */
+	static boolean isStillPlaced(BlockState current, BlockState placedState) {
+		return placedState == null || current.getBlock() == placedState.getBlock();
+	}
+
+	/** True for a container block entity with items in it (never overwritten by an undo). */
+	private boolean holdsItems(BlockPos pos) {
+		return level.getBlockEntity(pos) instanceof Container container && !container.isEmpty();
+	}
+
 	private void remember(BlockPos pos) {
 		if (recent.size() < RECENT) {
 			recent.add(pos);
 		} else if ((placed & 7) == 0) {
 			recent.set(placed % RECENT, pos);
 		}
+	}
+
+	/** Unique per BUILD job; an UNDO job has the id of the build it reverts. */
+	public long id() {
+		return id;
 	}
 
 	public Kind kind() {
@@ -197,7 +259,7 @@ public final class BuildJob {
 		return actions;
 	}
 
-	/** States replaced so far by a BUILD job (null for UNDO). */
+	/** Changes made so far by a BUILD job (null for UNDO). */
 	public UndoRecord record() {
 		return record;
 	}
@@ -229,9 +291,13 @@ public final class BuildJob {
 		return placed;
 	}
 
-	/** Entries not written: outside the build height or unparseable (planning), protected block entities, errors. */
+	/**
+	 * Entries not written. BUILD: outside the build height or unparseable (planning), outside the world border or
+	 * under spawn protection, protected block entities, errors. UNDO: positions changed since the build or holding
+	 * items, errors.
+	 */
 	public int skipped() {
-		return skippedPlanning + skippedProtected + skippedErrors;
+		return skippedPlanning + skippedProtected + skippedRestricted + skippedChanged + skippedErrors;
 	}
 
 	public int percent() {

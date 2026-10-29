@@ -223,4 +223,81 @@ class ConfigIOTest {
 		assertNull(loaded.providers.get("extra").extraBody.get("drop_me"));
 		assertFalse(Files.readString(file()).contains("\\u003c"));
 	}
+
+	@Test
+	void presetMapsAreMergedKeyByKey() throws IOException {
+		write("""
+				{
+				  "providers": {
+				    "deepseek": {"extraBody": {"top_k": 5}},
+				    "openrouter": {"extraHeaders": {"X-Title": "My Server"}},
+				    "qwen": {"extraBody": {"enable_thinking": false}},
+				    "moonshot": {"extraBody": null}
+				  }
+				}
+				""");
+		ModConfig c = ConfigIO.load(file());
+		Map<String, Object> deepseek = c.providers.get("deepseek").extraBody;
+		assertEquals(5L, deepseek.get("top_k"));
+		assertEquals(Map.of("type", "disabled"), deepseek.get("thinking"), "preset key kept next to the user's");
+		Map<String, String> headers = c.providers.get("openrouter").extraHeaders;
+		assertEquals("My Server", headers.get("X-Title"), "the user's value wins");
+		assertEquals("https://github.com/SAOCSB/mc-ai", headers.get("HTTP-Referer"));
+		assertEquals(Map.of("enable_thinking", false), c.providers.get("qwen").extraBody);
+		assertEquals(Map.of(), c.providers.get("moonshot").extraBody);
+
+		write("{\"providers\": {\"deepseek\": {\"extraBody\": {\"thinking\": null}}}}");
+		ProviderSettings optOut = ConfigIO.load(file()).providers.get("deepseek");
+		assertTrue(optOut.extraBody.containsKey("thinking"));
+		assertNull(optOut.extraBody.get("thinking"), "an explicit null still removes the preset's field");
+	}
+
+	@Test
+	void buildSafetyOptionsAreNormalized() throws IOException {
+		ModConfig defaults = ConfigIO.defaults();
+		assertEquals(160, defaults.build.maxDistance);
+		assertEquals(ModConfig.DEFAULT_DENIED_BLOCKS, defaults.build.deniedBlocks);
+		assertTrue(defaults.build.deniedBlocks.containsAll(List.of("command_block", "structure_block", "jigsaw", "spawner",
+				"trial_spawner")));
+		assertFalse(defaults.commands.whitelist.contains("particle"));
+		assertFalse(defaults.commands.whitelist.contains("say"));
+
+		write("{\"build\": {\"maxDistance\": 1, \"deniedBlocks\": [\"tnt\", \" \", null]}}");
+		ModConfig small = ConfigIO.load(file());
+		assertEquals(8, small.build.maxDistance);
+		assertEquals(List.of("tnt"), small.build.deniedBlocks);
+		write("{\"build\": {\"maxDistance\": 100000, \"deniedBlocks\": null}}");
+		ModConfig big = ConfigIO.load(file());
+		assertEquals(4096, big.build.maxDistance);
+		assertEquals(ModConfig.DEFAULT_DENIED_BLOCKS, big.build.deniedBlocks);
+	}
+
+	@Test
+	void versionOneWhitelistsLoseParticleAndSay() throws IOException {
+		write("{\"configVersion\": 1, \"commands\": {\"whitelist\": [\"summon\", \"particle\", \"SAY\", \"/say\", \"tp\"]}}");
+		ModConfig migrated = ConfigIO.load(file());
+		assertEquals(List.of("summon", "tp"), migrated.commands.whitelist);
+		assertEquals(ConfigIO.CONFIG_VERSION, migrated.configVersion);
+		assertTrue(Files.readString(file()).contains("\"configVersion\": 2"));
+
+		write("{\"configVersion\": 2, \"commands\": {\"whitelist\": [\"say\", \"particle\"]}}");
+		assertEquals(List.of("say", "particle"), ConfigIO.load(file()).commands.whitelist, "re-added later: kept");
+	}
+
+	@Test
+	void failedWriteBackDoesNotFailTheLoad() throws IOException {
+		write("{\"aiName\": \"Bob\", \"maxHistoryMessages\": 1000}");
+		String before = Files.readString(file());
+		ModConfig c = ConfigIO.load(file(), (path, config) -> {
+			throw new IOException("read-only file system");
+		});
+		assertEquals("Bob", c.aiName);
+		assertEquals(100, c.maxHistoryMessages, "normalized even though it could not be saved");
+		assertEquals(before, Files.readString(file()));
+		ModConfig missing = ConfigIO.load(dir.resolve("missing").resolve("x.json"), (path, config) -> {
+			throw new IOException("disk full");
+		});
+		assertEquals("deepseek", missing.provider, "a missing file still gives the defaults");
+		assertFalse(Files.exists(dir.resolve("missing")));
+	}
 }

@@ -6,6 +6,7 @@ import io.github.saocsb.mcai.core.agent.AgentRequest;
 import io.github.saocsb.mcai.core.agent.AgentStatus;
 import io.github.saocsb.mcai.core.agent.AgentTask;
 import io.github.saocsb.mcai.core.agent.AiAgent;
+import io.github.saocsb.mcai.core.agent.Conversation;
 import io.github.saocsb.mcai.core.agent.GameContext;
 import io.github.saocsb.mcai.core.agent.PromptBuilder;
 import io.github.saocsb.mcai.core.blueprint.Blueprint;
@@ -17,11 +18,15 @@ import io.github.saocsb.mcai.core.llm.LlmClient;
 import io.github.saocsb.mcai.core.llm.LlmClients;
 import io.github.saocsb.mcai.core.llm.LlmException;
 import io.github.saocsb.mcai.core.llm.ProviderConfig;
+import io.github.saocsb.mcai.core.placement.GroundMode;
+import io.github.saocsb.mcai.core.placement.PlacementMode;
 import io.github.saocsb.mcai.core.placement.PlacementSpec;
+import io.github.saocsb.mcai.core.placement.PlayerPose;
 import io.github.saocsb.mcai.core.placement.Transform;
 import io.github.saocsb.mcai.core.script.ScriptEngine;
 import io.github.saocsb.mcai.core.script.ScriptLimits;
 import io.github.saocsb.mcai.core.script.ScriptResult;
+import io.github.saocsb.mcai.core.script.WorldAction;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -42,8 +47,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpTimeoutException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
@@ -54,17 +62,18 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
- * The mod's runtime for one server: configuration, the LLM agent, per-player sessions and the build queue.
- * Every public method must be called on the server thread; agent callbacks are moved there with
- * {@link MinecraftServer#execute}.
+ * The mod's runtime for one server: configuration, the LLM agent, per-player sessions, the build queue and
+ * delayed world actions. Every public method must be called on the server thread; agent callbacks are moved there
+ * with {@link MinecraftServer#execute}.
  */
 public final class AiService implements BuildManager.Listener {
 	private static final Logger LOGGER = LoggerFactory.getLogger("MC-AI");
@@ -74,28 +83,46 @@ public final class AiService implements BuildManager.Listener {
 	private static final Set<String> LOCAL_HOSTS = Set.of("localhost", "127.0.0.1", "::1", "[::1]");
 	/** Re-send a request's status this often (ticks); the action bar fades after about three seconds. */
 	private static final int STATUS_REFRESH_TICKS = 40;
+	/** Look for idle sessions of offline players this often (ticks). */
+	private static final int EVICT_CHECK_TICKS = 20 * 60;
+	/** Sessions of players offline this long, with nothing running, are dropped. */
+	private static final long EVICT_AFTER_MILLIS = 30L * 60 * 1000;
+	/** Permission level for settings that can redirect requests or the API key (owner or console). */
+	static final int OWNER_LEVEL = 4;
+
+	/** World actions waiting for a {@link WorldAction.Wait} to pass. */
+	private record DelayedActions(UUID owner, int dueTick, ServerLevel level, List<WorldAction> actions,
+			Transform transform, int executedBefore) {
+	}
 
 	private final MinecraftServer server;
 	private final Path configFile;
 	private final ScriptEngine scripts = new ScriptEngine();
-	private final ExecutorService workers;
+	private final ThreadPoolExecutor workers;
 	private final McBlockValidator validator;
 	private final BuildManager builds;
 	private final Map<UUID, PlayerSession> sessions = new HashMap<>();
 	private final Set<AgentTask> activeTasks = new HashSet<>();
 	private final Queue<Runnable> nextTick = new ConcurrentLinkedQueue<>();
+	private final List<DelayedActions> delayed = new ArrayList<>();
 	private ModConfig config;
+	/** False while the config file could not be loaded (defaults in use): settings must not be saved over it. */
+	private boolean configLoaded;
 	private ProviderConfig provider;
 	private AiAgent agent;
 	private String systemPrompt;
 	private volatile boolean stopped;
 
-	private AiService(MinecraftServer server, Path configFile, ModConfig config) {
+	private AiService(MinecraftServer server, Path configFile, ModConfig config, boolean configLoaded) {
 		this.server = server;
 		this.configFile = configFile;
 		this.config = config;
-		this.workers = Executors.newFixedThreadPool(Math.max(2, config.maxConcurrentRequests + 1), workerThreads());
+		this.configLoaded = configLoaded;
+		int threads = workerCount(config);
+		this.workers = new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(),
+				workerThreads());
 		this.validator = new McBlockValidator(server.overworld().holderLookup(Registries.BLOCK));
+		this.validator.setDeniedBlocks(config.build.deniedBlocks);
 		this.builds = new BuildManager(() -> this.config.build, this);
 		rebuildClient();
 	}
@@ -106,18 +133,21 @@ public final class AiService implements BuildManager.Listener {
 	 */
 	public static AiService start(MinecraftServer server, Path configFile) {
 		ModConfig config;
+		boolean loaded;
 		try {
 			config = ConfigIO.load(configFile);
+			loaded = true;
 		} catch (IOException | RuntimeException e) {
 			LOGGER.error("Could not load {}; using defaults until /ai reload succeeds", configFile, e);
 			config = ConfigIO.defaults();
+			loaded = false;
 		}
-		AiService service = new AiService(server, configFile, config);
+		AiService service = new AiService(server, configFile, config, loaded);
 		LOGGER.info("MC-AI ready: provider {}, model {}", service.provider.id(), service.provider.model());
 		return service;
 	}
 
-	/** Cancels requests, drops queued builds and stops the worker pool. Called from SERVER_STOPPING. */
+	/** Cancels requests, drops queued builds and delayed actions and stops the worker pool. Called from SERVER_STOPPING. */
 	public void shutdown() {
 		stopped = true;
 		for (PlayerSession session : sessions.values()) {
@@ -127,11 +157,12 @@ public final class AiService implements BuildManager.Listener {
 			}
 		}
 		activeTasks.clear();
+		delayed.clear();
 		builds.clear();
 		workers.shutdownNow();
 	}
 
-	/** End of every server tick: deferred chat requests, then block placement. */
+	/** End of every server tick: deferred chat requests, delayed world actions, block placement, housekeeping. */
 	public void tick() {
 		Runnable task;
 		while ((task = nextTick.poll()) != null) {
@@ -142,11 +173,19 @@ public final class AiService implements BuildManager.Listener {
 			}
 		}
 		try {
+			runDueActions();
+		} catch (RuntimeException e) {
+			LOGGER.error("MC-AI delayed world actions failed", e);
+		}
+		try {
 			builds.tick();
 		} catch (RuntimeException e) {
 			LOGGER.error("MC-AI build tick failed", e);
 		}
 		refreshStatuses();
+		if (server.getTickCount() % EVICT_CHECK_TICKS == 0) {
+			evictIdleSessions(System.currentTimeMillis());
+		}
 	}
 
 	private void refreshStatuses() {
@@ -166,6 +205,26 @@ public final class AiService implements BuildManager.Listener {
 		}
 	}
 
+	/** Drops the sessions of players who have been offline for 30 minutes and have nothing running or queued. */
+	private void evictIdleSessions(long now) {
+		Iterator<PlayerSession> it = sessions.values().iterator();
+		while (it.hasNext()) {
+			PlayerSession session = it.next();
+			if (server.getPlayerList().getPlayer(session.playerId) != null) {
+				session.offlineSinceMillis = 0;
+				continue;
+			}
+			if (session.offlineSinceMillis == 0) {
+				session.offlineSinceMillis = now;
+				continue;
+			}
+			if (now - session.offlineSinceMillis >= EVICT_AFTER_MILLIS && session.task == null
+					&& !builds.hasJobs(session.playerId) && !hasDelayedActions(session.playerId)) {
+				it.remove();
+			}
+		}
+	}
+
 	private void showStatus(ServerPlayer player, PlayerSession session, String text) {
 		session.status = Texts.overlay(text);
 		session.statusTick = server.getTickCount();
@@ -181,12 +240,19 @@ public final class AiService implements BuildManager.Listener {
 		return config;
 	}
 
-	/** A player left: abort their running request (builds keep going). */
+	/** Whether {@code player} is still connected (the same player object is in the player list). */
+	public boolean isOnline(ServerPlayer player) {
+		return !player.hasDisconnected() && server.getPlayerList().getPlayer(player.getUUID()) == player;
+	}
+
+	/** A player left: abort their running request, confirmation and delayed world actions (builds keep going). */
 	public void onDisconnect(UUID playerId) {
+		cancelDelayedActions(playerId);
 		PlayerSession session = sessions.get(playerId);
 		if (session != null) {
 			cancelTask(session);
-			session.pending = null;
+			session.discardPending();
+			session.offlineSinceMillis = System.currentTimeMillis();
 		}
 	}
 
@@ -253,6 +319,8 @@ public final class AiService implements BuildManager.Listener {
 			error(player, "error.internal", String.valueOf(e.getMessage()));
 			return;
 		}
+		// A new request supersedes a build still waiting for /ai confirm.
+		session.discardPending();
 		session.task = task;
 		session.lastRequestMillis = now;
 		activeTasks.add(task);
@@ -264,10 +332,14 @@ public final class AiService implements BuildManager.Listener {
 
 	private void deliverChat(UUID playerId, long requestId, String text) {
 		PlayerSession session = sessions.get(playerId);
-		if (session == null || session.requestId != requestId || text == null || text.isBlank()) {
+		if (session == null || session.requestId != requestId || text == null) {
 			return;
 		}
-		Component line = Texts.chat(config.aiName, text);
+		String clean = Texts.sanitizeChat(text);
+		if (clean.isBlank()) {
+			return;
+		}
+		Component line = Texts.chat(config.aiName, clean);
 		if ("requester".equalsIgnoreCase(config.replyVisibility)) {
 			ServerPlayer player = server.getPlayerList().getPlayer(playerId);
 			if (player != null) {
@@ -360,24 +432,50 @@ public final class AiService implements BuildManager.Listener {
 	private void handleResult(ServerPlayer player, PlayerSession session, ScriptResult result) {
 		ServerLevel level = player.level();
 		Blueprint blueprint = result.blueprint();
+		boolean empty = blueprint == null || blueprint.isEmpty();
 		PlacementSpec spec = withDefaultDistance(result.placement() == null ? PlacementSpec.defaults() : result.placement());
-		Transform transform = BuildPlanner.transform(spec, blueprint, BuildPlanner.pose(player),
-				session.previousIn(level.dimension()), level);
-		if (blueprint == null || blueprint.isEmpty()) {
+		Transform previous = session.previousIn(level.dimension());
+		if (empty) {
+			spec = actionsOnly(spec, previous != null);
+		}
+		PlayerPose pose = BuildPlanner.pose(player);
+		Transform transform = BuildPlanner.transform(spec, blueprint, pose, previous, level);
+		int distance = BuildPlanner.horizontalDistance(BuildPlanner.bounds(blueprint), transform, pose.blockX(), pose.blockZ());
+		if (distance > config.build.maxDistance) {
+			error(player, "error.too_far", distance, config.build.maxDistance);
+			return;
+		}
+		if (empty) {
 			if (!result.actions().isEmpty()) {
-				reportActions(player, CommandRunner.run(player, level, result.actions(), transform, config.commands));
+				runActions(player.getUUID(), level, result.actions(), transform, 0);
 			}
 			return;
 		}
 		String name = result.name() == null || result.name().isBlank() ? tr(player, "build.default_name") : result.name();
-		BuildJob job = BuildPlanner.plan(level, blueprint, transform, name, validator, player.getUUID(), result.actions());
+		BuildJob job = BuildPlanner.plan(level, blueprint, transform, name, validator, player.getUUID(), result.actions())
+				.requester(player);
+		boolean replace = spec.replacePrevious();
+		// The build whose transform 'previous' reuses: the newest one in this dimension, whatever its state.
+		long replaceTarget = replace && previous != null ? session.lastBuildId : 0;
+		session.rememberBuild(job);
 		int confirmAbove = config.build.confirmAboveBlocks;
 		if (confirmAbove > 0 && job.total() > confirmAbove) {
-			session.pending = new PlayerSession.PendingBuild(job, spec.replacePrevious());
+			session.pending = new PlayerSession.PendingBuild(job, replace, replaceTarget);
 			player.sendSystemMessage(Texts.clickable(config.aiName, tr(player, "build.confirm", name, job.total()), "/ai confirm"));
 			return;
 		}
-		startBuild(player, session, job, spec.replacePrevious());
+		startBuild(player, session, job, replace, replaceTarget);
+	}
+
+	/**
+	 * A result with only world actions anchors local (0,0,0) at the player's feet, facing where the player looks
+	 * (ORIGIN placement), unless the script asked for an absolute position or its previous build (and there is one).
+	 */
+	static PlacementSpec actionsOnly(PlacementSpec spec, boolean hasPrevious) {
+		if (spec.mode() == PlacementMode.ABSOLUTE || (spec.mode() == PlacementMode.PREVIOUS && hasPrevious)) {
+			return spec;
+		}
+		return new PlacementSpec(PlacementMode.ORIGIN, spec.distance(), GroundMode.PLAYER, false, null, null, null);
 	}
 
 	/** Applies {@code build.frontDistance} when the script left the distance at the script API default. */
@@ -390,13 +488,9 @@ public final class AiService implements BuildManager.Listener {
 				spec.absZ());
 	}
 
-	private void startBuild(ServerPlayer player, PlayerSession session, BuildJob job, boolean replacePrevious) {
-		if (replacePrevious) {
-			builds.cancel(player.getUUID());
-			UndoRecord previous = session.undo.poll();
-			if (previous != null) {
-				builds.enqueue(BuildJob.undo(previous, player.getUUID()).silent(true));
-			}
+	private void startBuild(ServerPlayer player, PlayerSession session, BuildJob job, boolean replace, long replaceTarget) {
+		if (replace) {
+			undoReplaced(player, session, replaceTarget);
 		}
 		int ahead = builds.enqueue(job);
 		int seconds = (int) Math.max(1, Math.ceil(job.total() / (Math.max(1, config.build.blocksPerTick) * 20.0)));
@@ -404,6 +498,73 @@ public final class AiService implements BuildManager.Listener {
 		if (ahead > 0) {
 			info(player, "build.queued", ahead);
 		}
+	}
+
+	/**
+	 * Undoes the build a replacing build stands in for: stops it if it is still queued or placing, then reverts
+	 * exactly its record (never just the newest record). If it is no longer in the undo history, nothing is undone
+	 * and the player is told.
+	 */
+	private void undoReplaced(ServerPlayer player, PlayerSession session, long requested) {
+		long target = session.replaceTarget(requested);
+		if (requested != 0 && target == 0) {
+			return; // a build dropped before it placed anything, which itself replaced nothing
+		}
+		boolean wasQueued = target != 0 && builds.cancelBuild(target);
+		UndoRecord record = target == 0 ? null : session.removeUndo(target);
+		if (record != null) {
+			builds.enqueue(BuildJob.undo(record, player.getUUID()).silent(true));
+		} else if (!wasQueued) {
+			info(player, "build.replace_missing");
+		}
+	}
+
+	// ---- world actions --------------------------------------------------------------------------------------
+
+	/** Runs world actions up to the next wait for an online player and schedules the rest. */
+	private void runActions(UUID owner, ServerLevel level, List<WorldAction> actions, Transform transform, int executedBefore) {
+		ServerPlayer player = server.getPlayerList().getPlayer(owner);
+		if (player == null || actions.isEmpty()) {
+			return;
+		}
+		CommandRunner.Report report = CommandRunner.run(player, level, actions, transform, config.commands, config.build,
+				executedBefore);
+		reportActions(player, report);
+		if (!report.remaining().isEmpty()) {
+			delayed.add(new DelayedActions(owner, server.getTickCount() + report.waitTicks(), level, report.remaining(),
+					transform, executedBefore + report.executed()));
+		}
+	}
+
+	private void runDueActions() {
+		if (delayed.isEmpty()) {
+			return;
+		}
+		int now = server.getTickCount();
+		List<DelayedActions> due = new ArrayList<>();
+		delayed.removeIf(entry -> {
+			if (now - entry.dueTick() >= 0) {
+				due.add(entry);
+				return true;
+			}
+			return false;
+		});
+		for (DelayedActions entry : due) {
+			runActions(entry.owner(), entry.level(), entry.actions(), entry.transform(), entry.executedBefore());
+		}
+	}
+
+	private boolean cancelDelayedActions(UUID owner) {
+		return delayed.removeIf(entry -> entry.owner().equals(owner));
+	}
+
+	private boolean hasDelayedActions(UUID owner) {
+		for (DelayedActions entry : delayed) {
+			if (entry.owner().equals(owner)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// ---- build events ---------------------------------------------------------------------------------------
@@ -424,8 +585,13 @@ public final class AiService implements BuildManager.Listener {
 		if (job.kind() == BuildJob.Kind.UNDO) {
 			if (cancelled && session != null) {
 				session.pushUndo(job.remainingUndo(), config.build.undoHistory);
-			} else if (!cancelled && player != null && !job.silent()) {
-				success(player, "undo.done", job.name());
+			} else if (!cancelled && player != null) {
+				if (!job.silent()) {
+					success(player, "undo.done", job.name());
+				}
+				if (job.skipped() > 0) {
+					info(player, "undo.skipped", job.skipped());
+				}
 			}
 			return;
 		}
@@ -436,15 +602,11 @@ public final class AiService implements BuildManager.Listener {
 				info(player, "build.skipped", job.skipped());
 			}
 			if (!job.actions().isEmpty()) {
-				reportActions(player, CommandRunner.run(player, job.level(), job.actions(), job.transform(), config.commands));
+				runActions(owner, job.level(), job.actions(), job.transform(), 0);
 			}
 		}
 		if (session != null) {
 			session.pushUndo(job.record(), config.build.undoHistory);
-			if (job.hasStarted()) {
-				session.lastTransform = job.transform();
-				session.lastDimension = job.level().dimension();
-			}
 		}
 	}
 
@@ -462,14 +624,14 @@ public final class AiService implements BuildManager.Listener {
 
 	// ---- player commands ------------------------------------------------------------------------------------
 
-	/** Cancels the player's request, pending confirmation and builds. */
+	/** Cancels the player's request, pending confirmation, delayed world actions and builds. */
 	public void stop(ServerPlayer player) {
 		PlayerSession session = sessions.get(player.getUUID());
-		boolean stoppedSomething = false;
+		boolean stoppedSomething = cancelDelayedActions(player.getUUID());
 		if (session != null) {
-			stoppedSomething = cancelTask(session);
+			stoppedSomething |= cancelTask(session);
 			if (session.pending != null) {
-				session.pending = null;
+				session.discardPending();
 				stoppedSomething = true;
 			}
 		}
@@ -492,9 +654,9 @@ public final class AiService implements BuildManager.Listener {
 		info(player, "undo.start", record.name(), record.size());
 	}
 
-	/** Forgets the player's conversation. */
+	/** Forgets the player's conversation (a request still running writes to the discarded one). */
 	public void clear(ServerPlayer player) {
-		session(player.getUUID()).conversation.clear();
+		session(player.getUUID()).conversation = new Conversation();
 		success(player, "cmd.cleared", config.aiName);
 	}
 
@@ -507,7 +669,7 @@ public final class AiService implements BuildManager.Listener {
 		}
 		PlayerSession.PendingBuild pending = session.pending;
 		session.pending = null;
-		startBuild(player, session, pending.job(), pending.replacePrevious());
+		startBuild(player, session, pending.job(), pending.replace(), pending.replaceTarget());
 	}
 
 	/** Sends the help page. */
@@ -540,12 +702,23 @@ public final class AiService implements BuildManager.Listener {
 			return;
 		}
 		config = loaded;
+		configLoaded = true;
+		validator.setDeniedBlocks(config.build.deniedBlocks);
+		resizeWorkers();
 		rebuildClient();
 		source.sendSystemMessage(Texts.success(config.aiName, Messages.tr(lang, "cmd.reloaded", provider.id(), provider.model())));
 	}
 
+	/** Answers an unknown {@code /ai config} subcommand. */
+	public void configUsage(CommandSourceStack source) {
+		source.sendFailure(Texts.error(config.aiName, Messages.tr(lang(source), "cmd.config_usage")));
+	}
+
 	public void setProvider(CommandSourceStack source, String id) {
 		String lang = lang(source);
+		if (!canEditConfig(source, lang)) {
+			return;
+		}
 		String key = id.trim();
 		if (!config.providers.containsKey(key)) {
 			source.sendFailure(Texts.error(config.aiName, Messages.tr(lang, "cmd.unknown_provider", key,
@@ -557,8 +730,12 @@ public final class AiService implements BuildManager.Listener {
 	}
 
 	public void setModel(CommandSourceStack source, String model) {
+		String lang = lang(source);
+		if (!canEditConfig(source, lang)) {
+			return;
+		}
 		activeSettings().model = model.trim();
-		saveAndRebuild(source, lang(source), "model", model.trim());
+		saveAndRebuild(source, lang, "model", model.trim());
 	}
 
 	/**
@@ -567,14 +744,30 @@ public final class AiService implements BuildManager.Listener {
 	 */
 	public void setKey(CommandSourceStack source, String key) {
 		String lang = lang(source);
+		if (!canEditConfig(source, lang)) {
+			return;
+		}
 		String value = key.trim();
 		activeSettings().apiKey = "-".equals(value) ? "" : value;
 		saveAndRebuild(source, lang, "key", () -> Messages.tr(lang, provider.apiKey().isBlank() ? "key.unset" : "key.set"));
 	}
 
 	public void setBaseUrl(CommandSourceStack source, String baseUrl) {
+		String lang = lang(source);
+		if (!canEditConfig(source, lang)) {
+			return;
+		}
 		activeSettings().baseUrl = baseUrl.trim();
-		saveAndRebuild(source, lang(source), "baseurl", baseUrl.trim());
+		saveAndRebuild(source, lang, "baseurl", baseUrl.trim());
+	}
+
+	/** Refuses config edits while the file could not be loaded, so the user's file is not replaced by defaults. */
+	private boolean canEditConfig(CommandSourceStack source, String lang) {
+		if (configLoaded) {
+			return true;
+		}
+		source.sendFailure(Texts.error(config.aiName, Messages.tr(lang, "cmd.config_unavailable")));
+		return false;
 	}
 
 	private ProviderSettings activeSettings() {
@@ -626,6 +819,22 @@ public final class AiService implements BuildManager.Listener {
 		systemPrompt = null;
 	}
 
+	/** Matches the worker pool to {@code maxConcurrentRequests} (one spare thread for script runs and validation). */
+	private void resizeWorkers() {
+		int size = workerCount(config);
+		if (size > workers.getMaximumPoolSize()) {
+			workers.setMaximumPoolSize(size);
+			workers.setCorePoolSize(size);
+		} else {
+			workers.setCorePoolSize(size);
+			workers.setMaximumPoolSize(size);
+		}
+	}
+
+	private static int workerCount(ModConfig config) {
+		return Math.max(2, config.maxConcurrentRequests + 1);
+	}
+
 	private String systemPrompt() {
 		if (systemPrompt == null) {
 			systemPrompt = PromptBuilder.systemPrompt(config.aiName, config.build.maxBlocks, config.commands.enabled,
@@ -635,7 +844,9 @@ public final class AiService implements BuildManager.Listener {
 	}
 
 	private PlayerSession session(UUID playerId) {
-		return sessions.computeIfAbsent(playerId, PlayerSession::new);
+		PlayerSession session = sessions.computeIfAbsent(playerId, PlayerSession::new);
+		session.offlineSinceMillis = 0;
+		return session;
 	}
 
 	/** Cancels the session's running request; true if there was one. */
@@ -680,6 +891,11 @@ public final class AiService implements BuildManager.Listener {
 	/** Whether a command source may run admin commands ({@code permissions.adminLevel}). */
 	public boolean isAdmin(CommandSourceStack source) {
 		return hasLevel(source.permissions(), config.permissions.adminLevel);
+	}
+
+	/** Whether a command source may change the provider, API key or base URL (level 4: owner or console). */
+	public static boolean isOwner(CommandSourceStack source) {
+		return hasLevel(source.permissions(), OWNER_LEVEL);
 	}
 
 	/** Op-level check: 0 = everyone, 1..4 = moderator, game master, admin, owner. */

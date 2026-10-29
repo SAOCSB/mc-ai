@@ -40,15 +40,16 @@ public final class GameContexts {
 
 	/**
 	 * World Y used as local y = 0 in "player" ground mode: the feet block when standing on something, otherwise
-	 * the terrain surface below the player (WORLD_SURFACE heightmap; the feet level if the surface is above them,
-	 * e.g. in a cave).
+	 * the terrain surface below the player (MOTION_BLOCKING_NO_LEAVES heightmap, so tree tops don't count; the feet
+	 * level if the surface is above them, e.g. in a cave, or if the column has no ground at all, e.g. over the void).
 	 */
 	public static int groundY(ServerPlayer player) {
 		BlockPos pos = player.blockPosition();
 		if (player.onGround()) {
 			return pos.getY();
 		}
-		int surface = player.level().getHeight(Heightmap.Types.WORLD_SURFACE, pos.getX(), pos.getZ());
-		return Math.min(surface, pos.getY());
+		ServerLevel level = player.level();
+		int surface = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, pos.getX(), pos.getZ());
+		return surface <= level.getMinY() ? pos.getY() : Math.min(surface, pos.getY());
 	}
 }

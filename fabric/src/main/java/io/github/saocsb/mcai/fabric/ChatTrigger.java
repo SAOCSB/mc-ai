@@ -9,7 +9,8 @@ import java.util.List;
 /**
  * Sends chat lines that start with a configured prefix (default {@code @ai}) to the AI. The prefix matches
  * case-insensitively when followed by the end of the line, whitespace, punctuation or any non-ASCII character
- * ({@code "@ai build"}, {@code "@AI, hi"}, {@code "@ai建个房子"}), but not {@code "@aim"}.
+ * ({@code "@ai build"}, {@code "@AI, hi"}, {@code "@ai建个房子"}), but not {@code "@aim"}. A prefix that ends in
+ * something other than a letter or digit ({@code "!"}, {@code "ai:"}) needs no boundary: {@code "!build"} matches.
  */
 public final class ChatTrigger {
 	private static final String SEPARATORS = ",:，：、";
@@ -29,11 +30,16 @@ public final class ChatTrigger {
 		if (match == null) {
 			return true;
 		}
-		if (match.message().isEmpty()) {
-			service.runNextTick(() -> service.emptyMessageHint(sender, match.prefix()));
-		} else {
-			service.runNextTick(() -> service.ask(sender, match.message()));
-		}
+		service.runNextTick(() -> {
+			if (!service.isOnline(sender)) {
+				return; // left before the end of the tick
+			}
+			if (match.message().isEmpty()) {
+				service.emptyMessageHint(sender, match.prefix());
+			} else {
+				service.ask(sender, match.message());
+			}
+		});
 		return service.config().showTriggerMessages;
 	}
 
@@ -58,7 +64,8 @@ public final class ChatTrigger {
 			if (!text.regionMatches(true, 0, prefix, 0, prefix.length())) {
 				continue;
 			}
-			if (text.length() > prefix.length() && !isBoundary(text.charAt(prefix.length()))) {
+			boolean needsBoundary = Character.isLetterOrDigit(prefix.charAt(prefix.length() - 1));
+			if (needsBoundary && text.length() > prefix.length() && !isBoundary(text.charAt(prefix.length()))) {
 				continue;
 			}
 			return new Match(prefix, stripSeparators(text.substring(prefix.length())));
