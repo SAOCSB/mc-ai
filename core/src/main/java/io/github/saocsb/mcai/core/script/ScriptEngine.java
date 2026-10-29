@@ -56,13 +56,16 @@ import java.util.function.Consumer;
  * <p>Thread-safe: every {@link #run} uses its own Context and scope.
  */
 public final class ScriptEngine implements ScriptRunner {
-	/** Every global function the script API defines (used by tests to keep the prompt in sync). */
-	public static final java.util.List<String> API_FUNCTIONS = java.util.List.of(
+	/**
+	 * Every global function the script API defines. Tests keep the prompt in sync with it, and the response parser
+	 * uses it to recognise untagged code blocks that are scripts.
+	 */
+	public static final List<String> API_FUNCTIONS = List.of(
 			"block", "fill", "hollow", "walls", "frame", "clear", "line", "sphere", "dome", "ellipsoid",
 			"cylinder", "cone", "pyramid", "torus", "polygon", "text", "replace", "get",
 			"random", "randInt", "pick", "noise",
 			"placement", "setName",
-			"summon", "give", "time", "weather", "effect", "command",
+			"summon", "give", "time", "weather", "effect", "command", "wait",
 			"log", "print");
 
 	/** Source name given to the compiled script; stack frames with this name belong to the user's script. */

@@ -157,6 +157,27 @@ class ScriptEngineActionsTest {
 		}
 
 		@Test
+		void waitPausesTheActionList() {
+			assertEquals(List.of(new WorldAction.Give("iron_sword", 1), new WorldAction.Wait(5),
+					new WorldAction.Summon("zombie", 8, 0, 0, null), new WorldAction.Wait(0.5), new WorldAction.Wait(600)),
+					actions("give('iron_sword'); wait(5); summon('zombie', 8, 0, 0); wait(0.5); wait(600)"));
+			assertTypeError("wait(0)", "wait(): seconds must be greater than 0 and at most 600, got 0");
+			assertTypeError("wait(-1)", "wait(): seconds must be greater than 0 and at most 600, got -1");
+			assertTypeError("wait(600.5)", "wait(): seconds must be greater than 0 and at most 600, got 600.5");
+			assertTypeError("wait(NaN)", "wait(): seconds must be a finite number");
+			assertTypeError("wait(Infinity)", "wait(): seconds must be a finite number");
+			assertTypeError("wait('5')", "wait(): seconds must be a finite number");
+			assertTypeError("wait()", "wait(): expected 1 arguments (seconds), got 0");
+		}
+
+		@Test
+		void waitCountsTowardTheActionLimit() {
+			ScriptLimits l = limits(1000, 64, 5000, 2, 100, 50);
+			ScriptException e = failure(ScriptException.Kind.LIMIT, "wait(1);\nwait(2);\nwait(3);", l);
+			assertEquals("LimitError: wait(): too many world actions (max 2) (line 3: wait(3);)", e.getMessage());
+		}
+
+		@Test
 		void actionsKeepTheirOrder() {
 			assertEquals(List.of(new WorldAction.SetWeather("clear"), new WorldAction.Give("cake", 1),
 					new WorldAction.SetTime("noon")), actions("weather('clear'); give('cake'); time('noon')"));

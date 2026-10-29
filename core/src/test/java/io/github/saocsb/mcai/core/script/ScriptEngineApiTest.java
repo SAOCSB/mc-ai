@@ -7,8 +7,12 @@ import io.github.saocsb.mcai.core.blueprint.Shapes;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 import static io.github.saocsb.mcai.core.script.ScriptTestSupport.entries;
 import static io.github.saocsb.mcai.core.script.ScriptTestSupport.failure;
@@ -18,6 +22,7 @@ import static io.github.saocsb.mcai.core.script.ScriptTestSupport.run;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ScriptEngineApiTest {
 	/** Runs the script and checks that it built exactly what {@code expected} builds with Shapes directly. */
@@ -42,6 +47,26 @@ class ScriptEngineApiTest {
 		js.append("for (const m of ['log', 'info', 'warn', 'error']) if (typeof console[m] !== 'function') missing.push('console.' + m);\n");
 		js.append("log(missing.length === 0 ? 'ok' : missing.join());");
 		assertEquals("ok", log(js.toString()));
+	}
+
+	/** The API section of the prompt documents every function (print is an alias of log). */
+	@Test
+	void everyApiFunctionIsInThePrompt() throws IOException {
+		String prompt;
+		try (InputStream in = ScriptEngineApiTest.class.getResourceAsStream("/mcai/prompt/system.md")) {
+			assumeTrue(in != null, "mcai/prompt/system.md is not on the classpath");
+			prompt = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+		}
+		int start = prompt.indexOf("\n## API");
+		int end = prompt.indexOf("\n## ", start + 1);
+		assertTrue(start >= 0 && end > start, "no API section in the prompt");
+		String api = prompt.substring(start, end);
+		for (String fn : ScriptEngine.API_FUNCTIONS) {
+			if (!fn.equals("print")) {
+				assertTrue(Pattern.compile("\\b" + fn + "\\(").matcher(api).find(), fn + " is not in the prompt");
+			}
+		}
+		assertTrue(ScriptEngine.API_FUNCTIONS.contains("wait"));
 	}
 
 	@Test
@@ -121,7 +146,7 @@ class ScriptEngineApiTest {
 			assertEquals("98 80 44", log("log(hollow(0,0,0,4,4,4,'stone'), walls(10,0,0,14,4,4,'stone'), frame(20,0,0,24,4,4,'stone'))"));
 			assertEquals("null", log("hollow(0,0,0,4,4,4,'stone'); log(get(2, 2, 2))"));
 			ScriptResult r = run("fill(0,0,0,2,2,2,'stone'); log(clear(0,0,0,2,1,2)); log(get(1,1,1), get(1,2,1))");
-			assertEquals(List.of("18", "minecraft:air minecraft:stone"), r.logs());
+			assertEquals(List.of("18", "air stone"), r.logs());
 			assertBuilds("walls(0,0,0,3,2,5,'stone')", bp -> Shapes.walls(bp, 0, 0, 0, 3, 2, 5, "minecraft:stone"));
 			assertBuilds("frame(0,0,0,3,2,5,'stone')", bp -> Shapes.frame(bp, 0, 0, 0, 3, 2, 5, "minecraft:stone"));
 			assertTypeError("clear(0, 0, 0, 1, 1)", "clear(): expected 6 arguments (x1, y1, z1, x2, y2, z2), got 5");
@@ -211,9 +236,55 @@ class ScriptEngineApiTest {
 		}
 
 		@Test
-		void getReadsTheBlueprint() {
-			assertEquals("minecraft:oak_stairs[facing=east] null null minecraft:oak_stairs[facing=east]",
+		void replaceMatchesShortAndLongIdsExactlyIncludingStates() {
+			ScriptResult r = run("""
+					block(0, 0, 0, 'oak_stairs[facing=north]');
+					block(1, 0, 0, 'oak_stairs[facing=south]');
+					block(2, 0, 0, 'oak_stairs');
+					block(3, 0, 0, 'mymod:stone');
+					block(4, 0, 0, 'stone');
+					log(replace(0, 0, 0, 9, 0, 0, ' Oak_Stairs[ facing = north ]', 'gold_block'));
+					log(replace(0, 0, 0, 9, 0, 0, 'minecraft:oak_stairs', 'iron_block'));
+					log(replace(0, 0, 0, 9, 0, 0, 'minecraft:stone', 'dirt'));
+					log(replace(0, 0, 0, 9, 0, 0, 'mymod:stone', 'glass'));
+					""");
+			assertEquals(List.of("1", "1", "1", "1"), r.logs());
+			assertEquals(List.of("0,0,0=minecraft:gold_block", "1,0,0=minecraft:oak_stairs[facing=south]",
+					"2,0,0=minecraft:iron_block", "3,0,0=minecraft:glass", "4,0,0=minecraft:dirt"), entries(r.blueprint()));
+		}
+
+		@Test
+		void replaceRoundTripsWhatGetReturns() {
+			ScriptResult r = run("""
+					block(0, 0, 0, 'oak_stairs[facing=north]');
+					block(1, 0, 0, 'cave_air');
+					block(2, 0, 0, 'stone');
+					clear(3, 0, 0, 3, 0, 0);
+					log(replace(0, 0, 0, 9, 0, 0, get(0, 0, 0), 'spruce_stairs[facing=north]'));
+					log(replace(0, 0, 0, 9, 0, 0, get(1, 0, 0), 'glass'));
+					log(replace(0, 0, 0, 9, 0, 0, '*', 'dirt'));
+					""");
+			assertEquals(List.of("1", "2", "4"), r.logs());
+			assertEquals(List.of("0,0,0=minecraft:dirt", "1,0,0=minecraft:dirt", "2,0,0=minecraft:dirt",
+					"3,0,0=minecraft:dirt"), entries(r.blueprint()));
+		}
+
+		@Test
+		void getReturnsShortIdsWithStates() {
+			assertEquals("oak_stairs[facing=east] null null oak_stairs[facing=east]",
 					log("block(1, 2, 3, 'oak_stairs[facing=east]'); log(get(1, 2, 3), get(0, 0, 0), get(1e12, 0, 0), get(0.6, 2.2, 2.5))"));
+			assertEquals("stone|chest[facing=south]{Items:[]}|mymod:fancy_block[a=b]|air|air|air|air|null",
+					log("""
+							block(0, 0, 0, 'minecraft:stone');
+							block(1, 0, 0, 'chest[facing=south]{Items:[]}');
+							block(2, 0, 0, 'MyMod:Fancy_Block[ a = b ]');
+							block(3, 0, 0, 'air');
+							block(4, 0, 0, 'minecraft:cave_air');
+							block(5, 0, 0, 'void_air');
+							clear(6, 0, 0, 6, 0, 0);
+							log([0, 1, 2, 3, 4, 5, 6, 7].map(x => String(get(x, 0, 0))).join('|'));
+							"""));
+			assertEquals("object", log("log(typeof get(0, 0, 0))"));
 			assertTypeError("get(0, 0)", "get(): expected 3 arguments (x, y, z), got 2");
 		}
 

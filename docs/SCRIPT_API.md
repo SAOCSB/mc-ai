@@ -39,8 +39,8 @@ This is the exact contract between the script engine (`core/.../script/ScriptEng
 | `torus(cx, cy, cz, R, r, id)` | Horizontal ring: major radius R, tube radius r | count |
 | `polygon(points, y, height, id, hollow = false)` | Vertical prism over a footprint. `points` is an array of `[x, z]` pairs or `{x, z}` objects (at least 3). Hollow = outline walls only | count |
 | `text(str, x, y, z, id, scale = 1)` | 5x7 pixel letters (A-Z, 0-9, basic punctuation) standing in the X/Y plane at depth z, readable from the front. (x, y, z) is the bottom-left corner. Characters advance along +x; `\n` starts a new line below | width in blocks |
-| `replace(x1, y1, z1, x2, y2, z2, from, to)` | Within the box, changes blocks already placed by the script whose id equals `from` (normalized) to `to`. `from = '*'` matches any non-air block | count |
-| `get(x, y, z)` | The id the script has placed there so far, or `null`. It does not read the world | string or null |
+| `replace(x1, y1, z1, x2, y2, z2, from, to)` | Within the box, changes blocks already placed by the script to `to`. `from` is normalized like any id, so `'stone'` and `'minecraft:stone'` are the same, and must then match exactly, states and NBT included: `'oak_stairs'` does not match `'oak_stairs[facing=north]'`. `from = '*'` matches any non-air block, and an air id (`'air'`, `'cave_air'`, `'void_air'`) matches every kind of air, so `replace(..., get(x, y, z), to)` always works | count |
+| `get(x, y, z)` | What the script has placed there so far, as a short id: the `minecraft:` namespace is dropped but states and NBT stay (`'stone_bricks'`, `'oak_stairs[facing=north]'`); other namespaces stay. Every kind of air, including positions cleared with `clear()`, reads as `'air'`. `null` when nothing was placed there. It does not read the world | string or null |
 
 Counts are numbers of positions written, including overwrites.
 
@@ -83,8 +83,9 @@ Actions run in order after the blocks are placed. The server can disable or whit
 | `weather(value)` | `'clear'`, `'rain'` or `'thunder'` |
 | `effect(effectId, seconds = 30, amplifier = 0)` | Status effect on the requesting player (seconds 1..1000000, amplifier 0..255) |
 | `command(cmd)` | Any whitelisted vanilla command, run as the player at their position (leading `/` optional) |
+| `wait(seconds)` | Pause the action list: the actions after it run `seconds` later (0 < seconds <= 600, decimals allowed), e.g. a grace period between `give()` and `summon()` |
 
-Invalid argument values (unknown time keyword, count out of range, non-string ids) throw a `TypeError`.
+Invalid argument values (unknown time keyword, count out of range, non-string ids, a wait outside 0..600 seconds) throw a `TypeError`.
 
 ## Debugging
 

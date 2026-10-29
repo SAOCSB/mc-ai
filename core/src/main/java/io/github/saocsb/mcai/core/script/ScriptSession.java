@@ -46,6 +46,8 @@ final class ScriptSession {
 	private static final int MAX_LOG_LINE_CHARS = 1000;
 	private static final int MAX_NAME_LENGTH = 64;
 	private static final int MAX_COMMAND_LENGTH = 32_000;
+	/** Longest pause {@code wait()} accepts, in seconds. */
+	static final double MAX_WAIT_SECONDS = 600;
 	/** Longest block id, NBT or other string argument accepted (checked before a concatenated string is flattened). */
 	private static final int MAX_ARGUMENT_LENGTH = 65_536;
 	/** Host calls and guarded built-in calls between deadline checks. */
@@ -77,6 +79,7 @@ final class ScriptSession {
 	private static final String[] P_TIME = {"value"};
 	private static final String[] P_EFFECT = {"effectId"};
 	private static final String[] P_COMMAND = {"cmd"};
+	private static final String[] P_WAIT = {"seconds"};
 
 	@FunctionalInterface
 	private interface Impl {
@@ -108,6 +111,8 @@ final class ScriptSession {
 	private PlacementSpec placement = PlacementSpec.defaults();
 	private String name;
 	private final Map<String, String> idCache = new HashMap<>();
+	/** Palette id -> what get() returns for it (bounded by the blueprint's palette limit). */
+	private final Map<String, String> shortIds = new HashMap<>();
 	private ScriptableObject scope;
 	private int ticks;
 
@@ -270,6 +275,7 @@ final class ScriptSession {
 		define(scope, "weather", 1, this::weather);
 		define(scope, "effect", 1, this::effect);
 		define(scope, "command", 1, this::command);
+		define(scope, "wait", 1, this::waitAction);
 		define(scope, "log", 0, this::log);
 		define(scope, "print", 0, this::log);
 
@@ -538,6 +544,7 @@ final class ScriptSession {
 		long z2 = Math.round(number(a, 5, "replace", "z2"));
 		boolean any = a[6] instanceof CharSequence cs && cs.length() < 16 && cs.toString().strip().equals("*");
 		String from = any ? null : blockId(a, 6, "replace");
+		boolean air = from != null && BlockIds.isAir(from);
 		String to = blockId(a, 7, "replace");
 		long minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
 		long minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
@@ -546,7 +553,7 @@ final class ScriptSession {
 		int[] n = {0};
 		blueprint.forEach((x, y, z, id) -> {
 			if (x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ
-					&& (any ? !BlockIds.isAir(id) : id.equals(from))) {
+					&& (any ? !BlockIds.isAir(id) : air ? BlockIds.isAir(id) : id.equals(from))) {
 				if (n[0] + 3 > found[0].length) {
 					found[0] = Arrays.copyOf(found[0], found[0].length * 2);
 				}
@@ -574,7 +581,19 @@ final class ScriptSession {
 		if (Math.abs(x) > limit || Math.abs(y) > limit || Math.abs(z) > limit) {
 			return null;
 		}
-		return blueprint.get((int) x, (int) y, (int) z);
+		String id = blueprint.get((int) x, (int) y, (int) z);
+		return id == null ? null : shortIds.computeIfAbsent(id, ScriptSession::shortId);
+	}
+
+	/**
+	 * An id as get() reports it: {@code "air"} for every kind of air, otherwise without the {@code minecraft:}
+	 * namespace (states and NBT kept). Other namespaces stay.
+	 */
+	static String shortId(String normalized) {
+		if (BlockIds.isAir(normalized)) {
+			return "air";
+		}
+		return normalized.startsWith("minecraft:") ? normalized.substring("minecraft:".length()) : normalized;
 	}
 
 	// ---- randomness -----------------------------------------------------------------------
@@ -853,6 +872,17 @@ final class ScriptSession {
 			throw ScriptRuntime.typeError("command(): the command is longer than " + MAX_COMMAND_LENGTH + " characters");
 		}
 		addAction("command", new WorldAction.Command(cmd));
+		return Undefined.instance;
+	}
+
+	private Object waitAction(Object[] a) {
+		need(a, "wait", P_WAIT);
+		double seconds = number(a, 0, "wait", "seconds");
+		if (!(seconds > 0) || seconds > MAX_WAIT_SECONDS) {
+			throw ScriptRuntime.typeError("wait(): seconds must be greater than 0 and at most " + fmt(MAX_WAIT_SECONDS)
+					+ ", got " + fmt(seconds));
+		}
+		addAction("wait", new WorldAction.Wait(seconds));
 		return Undefined.instance;
 	}
 

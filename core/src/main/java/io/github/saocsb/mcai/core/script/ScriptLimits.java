@@ -6,7 +6,7 @@ package io.github.saocsb.mcai.core.script;
  * @param maxBlocks     max distinct block positions in the blueprint
  * @param maxSpan       max size of the blueprint along any axis
  * @param timeoutMillis wall-clock budget for running the script
- * @param maxActions    max world actions (summon/give/time/weather/effect/command)
+ * @param maxActions    max world actions (summon/give/time/weather/effect/command/wait)
  * @param maxStackDepth max JavaScript call depth (recursion guard)
  * @param maxLogLines   max lines kept from log()/print()/console.log()
  */
